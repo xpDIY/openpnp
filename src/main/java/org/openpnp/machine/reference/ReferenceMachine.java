@@ -64,6 +64,7 @@ import org.openpnp.machine.reference.driver.NullMotionPlanner;
 import org.openpnp.machine.reference.driver.ReferenceAdvancedMotionPlanner;
 import org.openpnp.machine.reference.feeder.AdvancedLoosePartFeeder;
 import org.openpnp.machine.reference.feeder.BlindsFeeder;
+import org.openpnp.machine.reference.feeder.CassetteFeeder;
 import org.openpnp.machine.reference.feeder.ReferenceAutoFeeder;
 import org.openpnp.machine.reference.feeder.ReferenceDragFeeder;
 import org.openpnp.machine.reference.feeder.ReferenceHeapFeeder;
@@ -450,6 +451,7 @@ public class ReferenceMachine extends AbstractMachine {
         l.add(Neoden4Feeder.class);
         l.add(PhotonFeeder.class);
         l.add(BambooFeederAutoVision.class);
+        l.add(CassetteFeeder.class);
         l.addAll(registeredFeederClasses);
         return l;
     }
