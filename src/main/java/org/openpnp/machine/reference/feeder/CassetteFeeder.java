@@ -23,6 +23,9 @@ import org.openpnp.model.RegionOfInterest;
 import org.openpnp.spi.Actuator;
 import org.openpnp.spi.Machine;
 import org.openpnp.spi.Nozzle;
+import org.openpnp.spi.base.AbstractActuator;
+import org.openpnp.spi.base.AbstractFeeder;
+import org.openpnp.util.FeederVisionHelper.PipelineType;
 import org.pmw.tinylog.Logger;
 import org.simpleframework.xml.Element;
 import org.openpnp.spi.Driver;
@@ -38,6 +41,8 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
     protected Length baseplateOffsetY= new Length(0,LengthUnit.Millimeters);
     @Element(required = false)
     protected Length baseplateOffsetZ= new Length(0,LengthUnit.Millimeters);
+    @Element(required = false)
+    protected Length rowSpacing= new Length(8,LengthUnit.Millimeters);    
     protected double contactToHoleOffsetX=0;
     protected double contactToHoleOffsetY=0;
     protected double contactToPickOffsetX=0;
@@ -55,6 +60,8 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
     protected int row=0;
     @Element(required = false)    
     protected int col=0;
+    @Element(required = false)    
+    protected int subType=0;    
     @Element(required = false)
     protected int totalRow=30;
     @Element(required = false)    
@@ -106,6 +113,15 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         firePropertyChange("col", oldValue, val);
     }
 
+    public int getSubType(){
+        return subType;
+    }
+    public void setSubType(int val){
+        Object oldValue = this.subType;
+        this.subType = val;
+        firePropertyChange("subType", oldValue, val);
+    }    
+
     public int getOrientation(){
         return orientation;
     }
@@ -130,6 +146,17 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         Object oldValue = this.orientation;
         this.orientation = val;
         firePropertyChange("orientation", oldValue, val);
+    }
+
+    
+    public void setRowSpacing(Length val){
+        Object oldValue = this.rowSpacing;
+        this.rowSpacing = val;
+        firePropertyChange("rowSpacing", oldValue, val);
+    }
+
+    public Length getRowSpacing(){
+        return rowSpacing;
     }
 
     public boolean getIsVerticalLayout(){
@@ -222,7 +249,7 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
 
                 if(driverName.toLowerCase().contains("3dplacer")){
                     gcodeDriver.setCommand(actuator, GcodeDriver.CommandType.ACTUATOR_READ_COMMAND, "M888 {Value}");
-                    gcodeDriver.setCommand(actuator, GcodeDriver.CommandType.ACTUATE_STRING_COMMAND, "M888 {StringValue};");
+                    gcodeDriver.setCommand(actuator, GcodeDriver.CommandType.ACTUATE_STRING_COMMAND, "M888 {StringValue}");
                     gcodeDriver.setCommand(actuator, GcodeDriver.CommandType.ACTUATOR_READ_REGEX, "3DP (?<Value>.*)");
                     //set driver so that it can get the correct driver.
                     actuator.setDriver(driver);
@@ -246,8 +273,8 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         Logger.debug("Entering saveToFeeder");
         Actuator actuator = configureActuator();
         try{
-            String response = actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,PI:%d,N:%s;",row,col,totalCol,totalRow,
-                (int)(getPartPitch().getValue()*10),getPart()==null?getName():getPart().getId()));
+            String response = actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,PI:%d,ST:%d,N:%s;",row,col,totalCol,totalRow,
+                (int)(getPartPitch().getValue()*10),subType,getPart()==null?getName():getPart().getId()));
             Logger.info("Response of read: {}", response);
         }catch (Exception e) {
             Logger.info("something wrong processing feeders: {}", e);
@@ -300,7 +327,7 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         Map<String,String> processedFeeders=new HashMap<>();
         Logger.debug("new processed feeder created");
         for (Feeder feeder : Configuration.get().getMachine().getFeeders()) {
-            if(!(feeder instanceof CassetteFeeder)){
+            if(!(feeder instanceof CassetteFeeder) && !(feeder instanceof CassetteLoosePartFeeder)){
                 continue;
             }
             String id = feeder.getId();
@@ -315,9 +342,18 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
                     continue;
                 }
 
+                if(feederInfo.containsKey("st") && "0".equals(feederInfo.get("st"))){
+                    //if subtype is 0, set it to 1
                 CassetteFeeder theFeeder = (CassetteFeeder) feeder;
- 
                 updateFeeder(feederInfo, theFeeder);
+                }
+                if(feederInfo.containsKey("st") && "1".equals(feederInfo.get("st"))){
+                    //if subtype is 0, set it to 1
+                CassetteLoosePartFeeder theFeeder = (CassetteLoosePartFeeder) feeder;
+                updateLoosePartFeeder(feederInfo, theFeeder);
+                }
+
+
                 processedFeeders.put(id,id);
             }else{
                 //if not in the system, set feeders to disable
@@ -331,25 +367,62 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
                 Logger.debug("skipping feeder:{}, already configured",key);                
                 continue;
             }
-            Logger.debug("Adding new feeders {}",key);
             Map<String,String> feederInfo = feeders.get(key);
-            if(!(feederInfo.containsKey("c") && feederInfo.containsKey("r")&& feederInfo.containsKey("h"))){
+            Logger.debug("Adding new feeders {}, st: {}, contain: {}",key, feederInfo.get("st"),("1".equals(feederInfo.get("st"))));
+            if(!(feederInfo.containsKey("c") && feederInfo.containsKey("r")&& feederInfo.containsKey("st"))){
                 Logger.warn("Feeder id:{} lack of row,column or height info, skipping..");
                 continue;
             }
 
-            CassetteFeeder newFeeder = new CassetteFeeder();
-            newFeeder.id = key;
-            updateFeeder(feederInfo, newFeeder);
-            
             try {
-                Logger.info("Added feeder id:{} name:{} at col:{} row:{}",key,feederInfo.get("n"),newFeeder.col,newFeeder.row);
-                Configuration.get().getMachine().addFeeder(newFeeder);
+                if(feederInfo.containsKey("st") && ("0".equals(feederInfo.get("st")))){
+                    //if subtype is 0, set it to 1
+                    
+                    CassetteFeeder newFeeder = new CassetteFeeder();
+                    newFeeder.id = key;
+                    updateFeeder(feederInfo, newFeeder);
+                    
+                    Logger.info("Added feeder id:{}, name: {}",key,feederInfo.get("n"));                                    
+                    Configuration.get().getMachine().addFeeder(newFeeder);
+                }
+                if(feederInfo.containsKey("st") && ("1".equals(feederInfo.get("st")))){
+                    //if subtype is 0, set it to 1
+                    CassetteLoosePartFeeder newFeeder = new CassetteLoosePartFeeder();
+                    newFeeder.id = key;
+                    updateLoosePartFeeder(feederInfo, newFeeder);
+                    Logger.info("Added feeder id:{}, name: {}",key,feederInfo.get("n"));                                    
+                    Configuration.get().getMachine().addFeeder(newFeeder);
+                }
+
             } catch (Exception e) {                
                 Logger.error("now able to add feeder with id:{}",key);
                 e.printStackTrace();
             }
         }
+    }
+
+        private void updateLoosePartFeeder(Map<String, String> feederInfo, CassetteLoosePartFeeder theFeeder) {
+
+        int col = Integer.parseInt(feederInfo.get("c"));
+        int row = Integer.parseInt(feederInfo.get("r"));
+        double ox = feederInfo.containsKey("ox")?Double.parseDouble(feederInfo.get("ox")):0;
+        double oy = feederInfo.containsKey("oy")?Double.parseDouble(feederInfo.get("oy")):0;
+        double h = Double.parseDouble(feederInfo.get("h"));
+        int subType = feederInfo.containsKey("st")?Integer.parseInt(feederInfo.get("st")):0;
+
+        theFeeder.setCol(col);
+        theFeeder.setSubType(subType);
+        theFeeder.setRow(row);
+        theFeeder.setTotalCol(totalCol);
+        theFeeder.setTotalRow(totalRow);
+        theFeeder.setLocation(calculatePickLocationFromRowColHeight(row,col,ox,oy,h));
+        theFeeder.setName(feederInfo.get("n"));
+        Part thePart = Configuration.get().getPart(feederInfo.get("n"));
+        if(thePart!=null){
+            theFeeder.setPart(thePart);
+        }
+
+        theFeeder.setEnabled(true);
     }
 
     private void updateFeeder(Map<String, String> feederInfo, CassetteFeeder theFeeder) {
@@ -360,11 +433,14 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         double oy = feederInfo.containsKey("oy")?Double.parseDouble(feederInfo.get("oy")):0;
         double h = Double.parseDouble(feederInfo.get("h"));
         double pi = feederInfo.containsKey("pi")?Double.parseDouble(feederInfo.get("pi")):getPartPitch().getValue()*10;
+        int subType = feederInfo.containsKey("st")?Integer.parseInt(feederInfo.get("st")):0;
 
         theFeeder.setCol(col);
+        theFeeder.setSubType(subType);
         theFeeder.setRow(row);
         theFeeder.setTotalCol(totalCol);
         theFeeder.setTotalRow(totalRow);
+        theFeeder.setRowSpacing(rowSpacing);
         theFeeder.setHole1Location(calculateHole1LocationFromRowColHeight(row,col,ox,oy,h));
         theFeeder.setHole2Location(calculateHole2LocationFromRowColHeight(row,col,ox,oy,h));
         theFeeder.setLocation(calculatePickLocationFromRowColHeight(row,col,ox,oy,h));
@@ -402,50 +478,68 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         if (getFeedCount() % getPartsPerFeedCycle() == 0) {
             // Modulo of feed count is zero - no more parts there to pick, must feed 
             // Make sure we're calibrated
-            assertCalibrated(false);
-            long feedsPerPart = (long)Math.ceil(getPartPitch().divide(getFeedPitch()));
-            long n = getFeedMultiplier()*feedsPerPart;
-            for (long i = 0; i < n; i++) {  // perform multiple feed actuations if required
+            if(getSubType()!=1){
+                assertCalibrated(false);
+                long feedsPerPart = (long)Math.ceil(getPartPitch().divide(getFeedPitch()));
+                long n = getFeedMultiplier()*feedsPerPart;
+                for (long i = 0; i < n; i++) {  // perform multiple feed actuations if required
+                    actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,AD:1;",row,col,totalCol,totalRow));
+                }
+            }else{
                 actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,AD:1;",row,col,totalCol,totalRow));
             }
         }else{
             Logger.debug("Multi parts feed: skipping tape feed at feed count " + getFeedCount());
         }
         
-        // Make sure we're calibrated after type feed
-        assertCalibrated(true);
+        if(getSubType()!=1){
+            // Make sure we're calibrated after type feed
+            assertCalibrated(true);
+        }
         // increment feed count 
         setFeedCount(getFeedCount()+1);        
     }
 
+    @Override
+    public void postPick(Nozzle nozzle) throws Exception {
+        Actuator actuator = configureActuator();
+        // post pick action, for loosepart feeder, turn off the light
+        actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,AD:2;",row,col,totalCol,totalRow));
+    }
 
-
-    private Location calculateHole1LocationFromRowColHeight(int row, int col, double ox, double oy,double height) {
-        
+    private Location calculateHole1LocationFromRowColHeight(int oRow, int oCol, double ox, double oy,double height) {
+        double rs = rowSpacing.getValue();
+        int row = isVerticalLayout?oRow:oCol;
+        int col = isVerticalLayout?oCol:oRow;
         return new Location(Configuration.get().getSystemUnits(), 
-            col*8+baseplateOffsetX.getValue()+ getOffsetXWithOrientation(ox+4, oy+2, orientation) + 
-                ((isVerticalLayout&&continuousRowCol>0)?(col/continuousRowCol)*skippedRowCol*8:0), 
-            row*8+baseplateOffsetY.getValue()+ getOffsetYWithOrientation(ox+4, oy+2, orientation) + 
-                ((!isVerticalLayout&&continuousRowCol>0)?(row/continuousRowCol)*skippedRowCol*8:0), 
+            col*rs+baseplateOffsetX.getValue()+ getOffsetXWithOrientation(ox+4, oy+2, orientation) + 
+                ((isVerticalLayout&&continuousRowCol>0)?(col/continuousRowCol)*skippedRowCol*rs:0), 
+            row*rs+baseplateOffsetY.getValue()+ getOffsetYWithOrientation(ox+4, oy+2, orientation) + 
+                ((!isVerticalLayout&&continuousRowCol>0)?(row/continuousRowCol)*skippedRowCol*rs:0), 
                 baseplateOffsetZ.add(new Length(height,LengthUnit.Millimeters)).getValue(), 0);
     }
-    private Location calculateHole2LocationFromRowColHeight(int row, int col, double ox, double oy,double height) {
-        
+    private Location calculateHole2LocationFromRowColHeight(int oRow, int oCol, double ox, double oy,double height) {
+        double rs = rowSpacing.getValue();
+        int row = isVerticalLayout?oRow:oCol;
+        int col = isVerticalLayout?oCol:oRow;        
         return new Location(Configuration.get().getSystemUnits(), 
-            col*8+baseplateOffsetX.getValue()+ getOffsetXWithOrientation(ox+4, oy-2, orientation) + 
-                ((isVerticalLayout&&continuousRowCol>0)?(col/continuousRowCol)*skippedRowCol*8:0), 
-            row*8+baseplateOffsetY.getValue()+ getOffsetYWithOrientation(ox+4, oy-2, orientation) + 
-                ((!isVerticalLayout&&continuousRowCol>0)?(row/continuousRowCol)*skippedRowCol*8:0), 
+            col*rs+baseplateOffsetX.getValue()+ getOffsetXWithOrientation(ox+4, oy-2, orientation) + 
+                ((isVerticalLayout&&continuousRowCol>0)?(col/continuousRowCol)*skippedRowCol*rs:0), 
+            row*rs+baseplateOffsetY.getValue()+ getOffsetYWithOrientation(ox+4, oy-2, orientation) + 
+                ((!isVerticalLayout&&continuousRowCol>0)?(row/continuousRowCol)*skippedRowCol*rs:0), 
                 baseplateOffsetZ.add(new Length(height,LengthUnit.Millimeters)).getValue(), 0);
     }    
 
-    private Location calculatePickLocationFromRowColHeight(int row, int col, double ox, double oy,double height) {
+    private Location calculatePickLocationFromRowColHeight(int oRow, int oCol, double ox, double oy,double height) {
+        double rs = rowSpacing.getValue();
+        int row = isVerticalLayout?oRow:oCol;
+        int col = isVerticalLayout?oCol:oRow;        
         
         return new Location(Configuration.get().getSystemUnits(), 
-            baseplateOffsetX.add(new Length(col*8+getOffsetXWithOrientation(ox, oy, orientation)+
-                ((isVerticalLayout&&continuousRowCol>0)?(col/continuousRowCol)*skippedRowCol*8:0),LengthUnit.Millimeters)).getValue(),
-            baseplateOffsetY.add(new Length(row*8+getOffsetYWithOrientation(ox, oy, orientation) + 
-                ((!isVerticalLayout&&continuousRowCol>0)?(row/continuousRowCol)*skippedRowCol*8:0),LengthUnit.Millimeters)).getValue(), 
+            baseplateOffsetX.add(new Length(col*rs+getOffsetXWithOrientation(ox, oy, orientation)+
+                ((isVerticalLayout&&continuousRowCol>0)?(col/continuousRowCol)*skippedRowCol*rs:0),LengthUnit.Millimeters)).getValue(),
+            baseplateOffsetY.add(new Length(row*rs+getOffsetYWithOrientation(ox, oy, orientation) + 
+                ((!isVerticalLayout&&continuousRowCol>0)?(row/continuousRowCol)*skippedRowCol*rs:0),LengthUnit.Millimeters)).getValue(), 
             baseplateOffsetZ.add(new Length(height,LengthUnit.Millimeters)).getValue(), 0);
     }
 

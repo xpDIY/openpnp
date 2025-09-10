@@ -28,7 +28,7 @@ public abstract class AbstractFeeder extends AbstractModelObject implements Feed
     private double version = 1.0;
     
     @Attribute
-    protected String id;
+    public String id;
 
     @Attribute(required = false)
     protected String name;

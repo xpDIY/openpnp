@@ -323,6 +323,7 @@ public class ReferencePushPullFeeder extends ReferenceFeeder {
     }
 
     public void assertCalibrated(boolean tapeFeed) throws Exception {
+        Logger.debug("insdie assertCalibrated, tapeFeed: {}", tapeFeed);
         if (getHole1Location().convertToUnits(LengthUnit.Millimeters).getLinearDistanceTo(getHole2Location()) < 3) {
             throw new Exception("Feeder "+getName()+" sprocket hole locations undefined/too close together.");
         }
@@ -1303,6 +1304,7 @@ public class ReferencePushPullFeeder extends ReferenceFeeder {
     }
 
     protected Exception autoSetupPipeline(Camera camera, PipelineType type) {
+        Logger.debug("insdie AutoSetupPipeline, type: "+type);
         if (type != null) {
             resetPipeline(type);
         }
@@ -1953,6 +1955,8 @@ public class ReferencePushPullFeeder extends ReferenceFeeder {
 
 
     public void performOcr(OcrWrongPartAction ocrAction, boolean ocrStop, StringBuilder report) throws Exception {
+        Logger.debug("performOcr on feeder "+getName()
+                +", ocrAction: "+ocrAction+", ocrStop: "+ocrStop+", report: "+report);
         if (getOcrRegion() == null) {
             throw new Exception("Feeder "+getName()+" has no OCR region defined.");
         }

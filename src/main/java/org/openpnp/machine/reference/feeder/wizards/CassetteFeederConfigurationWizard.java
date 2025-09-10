@@ -62,6 +62,10 @@ public class CassetteFeederConfigurationWizard extends AbstractConfigurationWiza
     private JLabel labelTotalCol;
     private JTextField textFieldTotalRow;
     private JTextField textFieldTotalCol;
+    private JLabel labelRowSpacing;
+    private JTextField textFieldRowSpacing;
+    private JLabel labelSubType;
+    private JTextField textFieldSubType;
 
     protected Action baseApplyAction;
 
@@ -139,6 +143,18 @@ public class CassetteFeederConfigurationWizard extends AbstractConfigurationWiza
         panelLayout.add(textFieldTotalCol,"1,1");
         panelFields.add(panelLayout);        
 
+        labelRowSpacing = new JLabel("Row Spacing");
+        panelLayout.add(labelRowSpacing,"1,1");
+
+        textFieldRowSpacing = new JTextField();
+        panelLayout.add(textFieldRowSpacing,"1,1");
+        panelFields.add(panelLayout);  
+
+        labelSubType = new JLabel("Sub Type");
+        panelLayout.add(labelSubType,"1,1");
+
+        textFieldSubType = new JTextField();
+        panelLayout.add(textFieldSubType,"1,1");        
         // parameter editing
         panelParam = new JPanel();
         panelParam.setBorder(new TitledBorder(null, "Feeder Parameters", TitledBorder.LEADING,
@@ -220,6 +236,8 @@ public class CassetteFeederConfigurationWizard extends AbstractConfigurationWiza
         addWrappedBinding(feeder, "orientation", textFieldOrientation,"text", intConverter);
         addWrappedBinding(feeder, "totalRow", textFieldTotalRow,"text", intConverter);
         addWrappedBinding(feeder, "totalCol", textFieldTotalCol,"text", intConverter);
+        addWrappedBinding(feeder, "rowSpacing", textFieldRowSpacing,"text", lengthConverter);
+        addWrappedBinding(feeder, "subType", textFieldSubType,"text", intConverter);
 
         ComponentDecorators.decorateWithAutoSelectAndLengthConversion(textFieldBaseplateOffsetX);
         ComponentDecorators.decorateWithAutoSelectAndLengthConversion(textFieldBaseplateOffsetY);
