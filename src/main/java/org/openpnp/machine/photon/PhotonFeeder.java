@@ -262,8 +262,7 @@ public class PhotonFeeder extends ReferenceFeeder {
         return actuator;
     }
 
-    @Override
-    public void feed(Nozzle nozzle) throws Exception {
+    private void feed(Nozzle nozzle, int distance_mm) throws Exception {
         for (int i = 0; i <= photonProperties.getFeederCommunicationMaxRetry(); i++) {
             findSlotAddressIfNeeded();
             initializeIfNeeded();
@@ -274,7 +273,7 @@ public class PhotonFeeder extends ReferenceFeeder {
 
             verifyFeederLocationIsFullyConfigured();
 
-            MoveFeedForward moveFeedForward = new MoveFeedForward(slotAddress, partPitch * 10);
+            MoveFeedForward moveFeedForward = new MoveFeedForward(slotAddress, distance_mm * 10);
             MoveFeedForward.Response moveFeedForwardResponse = moveFeedForward.send(photonBus);
 
             if (moveFeedForwardResponse == null) {
@@ -295,8 +294,8 @@ public class PhotonFeeder extends ReferenceFeeder {
             for (int j = 0; j <= photonProperties.getFeederCommunicationMaxRetry() || System.nanoTime() <= endTimeNanos; j++) {
                 Thread.sleep(50); // MAGIC: this feels like a good number, there is no particular reason it is this way.
 
-                if (j == 0 && nozzle != null && getMoveWhileFeeding()) {
-                    MovableUtils.moveToLocationAtSafeZ(nozzle, getPickLocation().derive(null, null, Double.NaN, null));
+                if (j == 0 && nozzle != null && Configuration.get().getMachine().isHomed() && getMoveWhileFeeding()) {
+                    MovableUtils.moveToLocationAtSafeZ(nozzle, getPickLocation().deriveLengths(null, null, nozzle.getEffectiveSafeZ(), null));
                 }
 
                 MoveFeedStatus moveFeedStatus = new MoveFeedStatus(slotAddress);
@@ -317,6 +316,25 @@ public class PhotonFeeder extends ReferenceFeeder {
         }
 
         throw new FeedFailureException("Failed to feed for an unknown reason. Is the feeder inserted?");
+    }
+
+    @Override
+    public void feed(Nozzle nozzle) throws Exception {
+        switch (getFeedOptions()) {
+        case Normal:
+            break;
+        case SkipNext:
+            setFeedOptions(FeedOptions.Normal);
+            return;
+        case Disable:
+            return;
+        }
+
+        feed(nozzle, partPitch);
+    }
+
+    public void feedOneMm() throws Exception {
+        feed(null, 1);
     }
 
     @Override
@@ -565,5 +583,22 @@ public class PhotonFeeder extends ReferenceFeeder {
         for (PhotonFeeder feeder : feedersToAdd) {
             Configuration.get().getMachine().addFeeder(feeder);
         }
+    }
+
+    @Override
+    public boolean canTakeBackPart() {
+        return getFeedOptions() == FeedOptions.Normal;
+    }
+
+    @Override
+    public void takeBackPart(Nozzle nozzle) throws Exception {
+        super.takeBackPart(nozzle);
+        putPartBack(nozzle);
+        setFeedOptions(FeedOptions.SkipNext);
+    }
+
+    @Override
+    public boolean supportsFeedOptions() {
+        return true;
     }
 }

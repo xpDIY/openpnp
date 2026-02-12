@@ -271,7 +271,14 @@ public class PackagesPanel extends JPanel implements WizardContainer {
         List<Package> selections = new ArrayList<>();
         for (int selectedRow : table.getSelectedRows()) {
             selectedRow = table.convertRowIndexToModel(selectedRow);
-            selections.add(tableModel.getRowObjectAt(selectedRow));
+            try {
+                selections.add(tableModel.getRowObjectAt(selectedRow));
+            }
+            catch (IndexOutOfBoundsException e) {
+                // sometimes this happens when deleting a row, if the gui state
+                // updates after the model state
+                Logger.warn("package selection index {} out of bounds", selectedRow);
+            }
         }
         return selections;
     }
@@ -417,15 +424,20 @@ public class PackagesPanel extends JPanel implements WizardContainer {
                 return;
             }
             try {
-                Serializer ser = Configuration.createSerializer();
-                Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
-                String s = (String) clipboard.getData(DataFlavor.stringFlavor);
-                StringReader r = new StringReader(s);
-                Package pkg = ser.read(Package.class, s);
-                pkg.setId(id);
-                Configuration.get().addPackage(pkg);
-                tableModel.fireTableDataChanged();
-                Helpers.selectObjectTableRow(table, pkg);
+                try {
+                    Configuration.get().lockListeners();
+                    Serializer ser = Configuration.createSerializer();
+                    Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
+                    String s = (String) clipboard.getData(DataFlavor.stringFlavor);
+                    StringReader r = new StringReader(s);
+                    Package pkg = ser.read(Package.class, s);
+                    pkg.setId(id);
+                    Configuration.get().addPackage(pkg);
+                    tableModel.fireTableDataChanged();
+                    Helpers.selectObjectTableRow(table, pkg);
+                } finally {
+                    Configuration.get().unlockListeners();
+                }
             }
             catch (Exception e) {
                 MessageBoxes.errorBox(getTopLevelAncestor(), "Paste Failed", e);
