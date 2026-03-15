@@ -31,9 +31,10 @@ import org.openpnp.gui.support.Wizard;
 import org.openpnp.machine.reference.ReferenceActuator;
 import org.openpnp.machine.reference.ReferenceFeeder;
 import org.openpnp.machine.reference.driver.GcodeDriver;
-import org.openpnp.machine.reference.feeder.wizards.ReferenceLoosePartFeederConfigurationWizard;
+import org.openpnp.machine.reference.feeder.wizards.CassetteLoosePartFeederConfigurationWizard;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Length;
+import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
 import org.openpnp.spi.Actuator;
 import org.openpnp.spi.Camera;
@@ -71,6 +72,13 @@ public class CassetteLoosePartFeeder extends ReferenceLoosePartFeeder {
     protected int totalRow=30;
     @Element(required = false)    
     protected int totalCol=15;
+    
+    // Working plane height - used as reference for height calculations
+    @Element(required = false)
+    protected Length baseplateOffsetZ = new Length(0, LengthUnit.Millimeters);
+    
+    // Track if settings have changed and need to be saved to feeder
+    private transient boolean needsSave = false;
 
 public int getRow(){
         return row;
@@ -124,6 +132,77 @@ public int getRow(){
         firePropertyChange("orientation", oldValue, val);
     }
 
+    public Length getBaseplateOffsetZ() {
+        return baseplateOffsetZ;
+    }
+    
+    public void setBaseplateOffsetZ(Length offset) {
+        Object oldValue = this.baseplateOffsetZ;
+        this.baseplateOffsetZ = offset;
+        firePropertyChange("baseplateOffsetZ", oldValue, offset);
+    }
+
+    @Override
+    public void setLocation(Location location) {
+        // Track if Z height changed - save immediately to feeder flash
+        if (this.location != null && location != null) {
+            double oldZ = this.location.convertToUnits(LengthUnit.Millimeters).getZ();
+            double newZ = location.convertToUnits(LengthUnit.Millimeters).getZ();
+            
+            // If Z changed by more than 0.01mm, save immediately
+            if (Math.abs(oldZ - newZ) > 0.01) {
+                needsSave = true;
+                Logger.debug("Location Z changed for feeder {}, saving to flash", getName());
+                // Update location first, then save in machine context
+                super.setLocation(location);
+                // Save immediately in a machine task context
+                try {
+                    Configuration.get().getMachine().execute(() -> {
+                        saveToFeeder();
+                        return null;
+                    });
+                } catch (Exception e) {
+                    Logger.error(e, "Failed to auto-save feeder configuration after location change");
+                }
+                return;
+            }
+        }
+        super.setLocation(location);
+    }
+
+    /**
+     * Save the feeder configuration (including height) to feeder flash.
+     * Must be called from within a machine task context.
+     * Height is stored in 0.1mm units (integer), so we:
+     * 1. Subtract the working plane height (baseplateOffsetZ)
+     * 2. Multiply by 10 to convert mm to 0.1mm units
+     * 3. Take integer value
+     */
+    public void saveToFeeder() {
+        Logger.debug("Entering saveToFeeder for loose part feeder");
+        Actuator actuator = configureActuator();
+        try {
+            if (actuator == null) {
+                throw new Exception("No actuator configured for feeder " + getName());
+            }
+            
+            // Convert current Z location to height value for feeder storage
+            double zInMm = location.convertToUnits(LengthUnit.Millimeters).getZ();
+            double heightRelativeToWorkingPlane = zInMm - baseplateOffsetZ.convertToUnits(LengthUnit.Millimeters).getValue();
+            int heightForFeeder = (int) Math.round(heightRelativeToWorkingPlane * 10.0);
+            
+            // Send command to save configuration to feeder
+            String response = actuator.read(String.format("R%d C%d TC%d TR%d H%d ST%d N%s;", 
+                row, col, totalCol, totalRow, heightForFeeder, subType, 
+                getPart() == null ? getName() : getPart().getId()));
+            Logger.info("Saved feeder config with height {} ({}*0.1mm) to R{} C{}, response: {}", 
+                heightForFeeder, heightForFeeder, row, col, response);
+            needsSave = false;  // Clear the save flag
+        } catch (Exception e) {
+            Logger.error(e, "Failed to save feeder configuration");
+        }
+    }
+
     
     public boolean getIsVerticalLayout(){
         return isVerticalLayout;
@@ -148,8 +227,39 @@ public int getRow(){
                     getName()));
         }
         
-        actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,AD:1;",row,col,totalCol,totalRow));
-        super.feed(nozzle);
+        // Auto-save if settings changed (e.g., user modified Z height and clicked Apply)
+        if (needsSave) {
+            Logger.info("Auto-saving feeder {} configuration to flash before feeding", getName());
+            saveToFeeder();
+        }
+        
+        // Turn off top lighting and prevent camera from turning it back on during vision
+        Camera camera = head.getDefaultCamera();
+        Actuator lightActuator = camera.getLightActuator();
+        boolean originalBeforeCaptureLightOn = false;
+        
+        if (lightActuator != null) {
+            // Save original setting and disable automatic lighting
+            if (camera instanceof org.openpnp.spi.base.AbstractCamera) {
+                org.openpnp.spi.base.AbstractCamera abstractCamera = (org.openpnp.spi.base.AbstractCamera) camera;
+                originalBeforeCaptureLightOn = abstractCamera.isBeforeCaptureLightOn();
+                abstractCamera.setBeforeCaptureLightOn(false);
+            }
+            // Turn off the light
+            lightActuator.actuate(false);
+        }
+        
+        actuator.read(String.format("R%d C%d TC%d TR%d AD1;",row,col,totalCol,totalRow));
+        
+        try {
+            super.feed(nozzle);
+        } finally {
+            // Restore original camera light setting
+            if (lightActuator != null && camera instanceof org.openpnp.spi.base.AbstractCamera) {
+                org.openpnp.spi.base.AbstractCamera abstractCamera = (org.openpnp.spi.base.AbstractCamera) camera;
+                abstractCamera.setBeforeCaptureLightOn(originalBeforeCaptureLightOn);
+            }
+        }
     }
 
     
@@ -157,7 +267,12 @@ public int getRow(){
     public void postPick(Nozzle nozzle) throws Exception {
         Actuator actuator = configureActuator();
         // post pick action, for loosepart feeder, turn off the light
-        actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,AD:2;",row,col,totalCol,totalRow));
+        actuator.read(String.format("R%d C%d TC%d TR%d AD2;",row,col,totalCol,totalRow));
+    }
+
+    @Override
+    public Wizard getConfigurationWizard() {
+        return new CassetteLoosePartFeederConfigurationWizard(this);
     }
 
     static Actuator configureActuator(){

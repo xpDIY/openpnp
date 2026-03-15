@@ -273,7 +273,7 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         Logger.debug("Entering saveToFeeder");
         Actuator actuator = configureActuator();
         try{
-            String response = actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,PI:%d,ST:%d,N:%s;",row,col,totalCol,totalRow,
+            String response = actuator.read(String.format("R%d C%d TC%d TR%d PI%d ST%d N%s;",row,col,totalCol,totalRow,
                 (int)(getPartPitch().getValue()*10),subType,getPart()==null?getName():getPart().getId()));
             Logger.info("Response of read: {}", response);
         }catch (Exception e) {
@@ -286,7 +286,7 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         Logger.debug("Entering discoverFeeders");
         Actuator actuator = configureActuator();
         try {
-            String response = actuator.read(String.format("TR:%d,TC:%d;",totalRow,totalCol));
+            String response = actuator.read(String.format("TR%d TC%d;",totalRow,totalCol));
             Logger.info("Response of read: {}", response);
             processFeeders(response);
         } catch (Exception e) {
@@ -407,7 +407,8 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         int row = Integer.parseInt(feederInfo.get("r"));
         double ox = feederInfo.containsKey("ox")?Double.parseDouble(feederInfo.get("ox")):0;
         double oy = feederInfo.containsKey("oy")?Double.parseDouble(feederInfo.get("oy")):0;
-        double h = Double.parseDouble(feederInfo.get("h"));
+        // Height from feeder is in 0.1mm units, convert to mm by dividing by 10
+        double h = Double.parseDouble(feederInfo.get("h")) / 10.0;
         int subType = feederInfo.containsKey("st")?Integer.parseInt(feederInfo.get("st")):0;
 
         theFeeder.setCol(col);
@@ -415,6 +416,7 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         theFeeder.setRow(row);
         theFeeder.setTotalCol(totalCol);
         theFeeder.setTotalRow(totalRow);
+        theFeeder.setBaseplateOffsetZ(baseplateOffsetZ);
         theFeeder.setLocation(calculatePickLocationFromRowColHeight(row,col,ox,oy,h));
         theFeeder.setName(feederInfo.get("n"));
         Part thePart = Configuration.get().getPart(feederInfo.get("n"));
@@ -431,7 +433,8 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
         int row = Integer.parseInt(feederInfo.get("r"));
         double ox = feederInfo.containsKey("ox")?Double.parseDouble(feederInfo.get("ox")):0;
         double oy = feederInfo.containsKey("oy")?Double.parseDouble(feederInfo.get("oy")):0;
-        double h = Double.parseDouble(feederInfo.get("h"));
+        // Height from feeder is in 0.1mm units, convert to mm by dividing by 10
+        double h = Double.parseDouble(feederInfo.get("h")) / 10.0;
         double pi = feederInfo.containsKey("pi")?Double.parseDouble(feederInfo.get("pi")):getPartPitch().getValue()*10;
         int subType = feederInfo.containsKey("st")?Integer.parseInt(feederInfo.get("st")):0;
 
@@ -483,10 +486,10 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
                 long feedsPerPart = (long)Math.ceil(getPartPitch().divide(getFeedPitch()));
                 long n = getFeedMultiplier()*feedsPerPart;
                 for (long i = 0; i < n; i++) {  // perform multiple feed actuations if required
-                    actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,AD:1;",row,col,totalCol,totalRow));
+                    actuator.read(String.format("R%d C%d TC%d TR%d AD1;",row,col,totalCol,totalRow));
                 }
             }else{
-                actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,AD:1;",row,col,totalCol,totalRow));
+                actuator.read(String.format("R%d C%d TC%d TR%d AD1;",row,col,totalCol,totalRow));
             }
         }else{
             Logger.debug("Multi parts feed: skipping tape feed at feed count " + getFeedCount());
@@ -504,7 +507,7 @@ public class CassetteFeeder extends ReferencePushPullFeeder {
     public void postPick(Nozzle nozzle) throws Exception {
         Actuator actuator = configureActuator();
         // post pick action, for loosepart feeder, turn off the light
-        actuator.read(String.format("R:%d,C:%d,TC:%d,TR:%d,AD:2;",row,col,totalCol,totalRow));
+        actuator.read(String.format("R%d C%d TC%d TR%d AD2;",row,col,totalCol,totalRow));
     }
 
     private Location calculateHole1LocationFromRowColHeight(int oRow, int oCol, double ox, double oy,double height) {
