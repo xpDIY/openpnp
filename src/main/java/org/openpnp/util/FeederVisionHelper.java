@@ -70,7 +70,7 @@ public class FeederVisionHelper {
 
     public enum PipelineType {
         ColorKeyed,
-        CircularSymmetry
+        CircularSymmetry,
     }
 
     // default CV pipelines are defined as XML resources
@@ -620,7 +620,35 @@ public class FeederVisionHelper {
                         // preliminary pick location
                         calibratedPickLocation = camera.getLocation()
                                 .derive(partLocation, false, false, true, false) // previous Z
-                                .derive(null,  null, null, angleTape); // preliminary feeeder orientation
+                                .derive(null,  null, null, angleTape); // preliminary feeder orientation
+                        if (normalizePickLocation) {
+                            // Normalize the pick location relative to the detected hole 1,
+                            // snapping to the nominal EIA-481 part pocket position.
+                            Location relativePickLocation = calibratedPickLocation
+                                    .convertToUnits(LengthUnit.Millimeters)
+                                    .subtract(calibratedHole1Location);
+                            double rawX = relativePickLocation.getX();
+                            double rawY = relativePickLocation.getY();
+                            relativePickLocation = relativePickLocation.rotateXy(-angleTape)
+                                    .derive(null, null, null, 0.0);
+                            Logger.debug("[FeederVisionHelper] FromPickLocationGetHoles normalize: "
+                                    + "rawMachineXY=(" + String.format("%.3f", rawX) + ", " + String.format("%.3f", rawY) + ") mm, "
+                                    + "localXY=(" + String.format("%.3f", relativePickLocation.getX()) + ", " + String.format("%.3f", relativePickLocation.getY()) + ") mm, "
+                                    + "hole1=(" + String.format("%.3f", calibratedHole1Location.getX()) + ", " + String.format("%.3f", calibratedHole1Location.getY()) + ") mm");
+                            relativePickLocation = new Location(LengthUnit.Millimeters,
+                                    Math.round(relativePickLocation.getX()/partPitchMinMm)*partPitchMinMm,
+                                    -sprocketHoleToPartMinMm+Math.round((relativePickLocation.getY()+sprocketHoleToPartMinMm)/sprocketHoleToPartGridMm)*sprocketHoleToPartGridMm,
+                                    0, 0);
+                            Logger.debug("[FeederVisionHelper] FromPickLocationGetHoles snappedLocalXY=("
+                                    + String.format("%.3f", relativePickLocation.getX()) + ", " + String.format("%.3f", relativePickLocation.getY()) + ") mm");
+                            calibratedPickLocation = calibratedHole1Location.add(relativePickLocation.rotateXy(angleTape))
+                                    .derive(null, null, calibratedPickLocation.getZ(), angleTape);
+                            Logger.debug("[FeederVisionHelper] FromPickLocationGetHoles calibratedPickLocation=("
+                                    + String.format("%.3f", calibratedPickLocation.getX()) + ", "
+                                    + String.format("%.3f", calibratedPickLocation.getY()) + ", "
+                                    + String.format("%.3f", calibratedPickLocation.getZ()) + ", "
+                                    + String.format("%.2f", calibratedPickLocation.getRotation()) + "°)");
+                        }
                     }
                     else {
                         // find the two holes matching
@@ -677,14 +705,26 @@ public class FeederVisionHelper {
                                         .derive(null, null, null, 0.0);
                                 // normalize to a nominal local pick location according to EIA 481
                                 if (normalizePickLocation) {
+                                    double rawX = relativePickLocation.getX();
+                                    double rawY = relativePickLocation.getY();
                                     relativePickLocation = new Location(LengthUnit.Millimeters,
                                             Math.round(relativePickLocation.getX()/partPitchMinMm)*partPitchMinMm,
                                             -sprocketHoleToPartMinMm+Math.round((relativePickLocation.getY()+sprocketHoleToPartMinMm)/sprocketHoleToPartGridMm)*sprocketHoleToPartGridMm,
                                             0, 0);
+                                    Logger.debug("[FeederVisionHelper] CalibrateHoles normalization: "
+                                            + "rawLocalXY=(" + String.format("%.3f", rawX) + ", " + String.format("%.3f", rawY) + ") mm, "
+                                            + "snappedLocalXY=(" + String.format("%.3f", relativePickLocation.getX()) + ", " + String.format("%.3f", relativePickLocation.getY()) + ") mm, "
+                                            + "calHole1=(" + String.format("%.3f", calibratedHole1Location.getX()) + ", " + String.format("%.3f", calibratedHole1Location.getY()) + ") mm, "
+                                            + "angleTape=" + String.format("%.2f", angleTape) + "°");
                                 }
                                 // calculate the new pick location with the new hole 1 location and tape angle
                                 calibratedPickLocation = calibratedHole1Location.add(relativePickLocation.rotateXy(angleTape))
                                         .derive(null, null, pickLocation.getZ(), angleTape);
+                                Logger.debug("[FeederVisionHelper] CalibrateHoles calibratedPickLocation=("
+                                        + String.format("%.3f", calibratedPickLocation.getX()) + ", "
+                                        + String.format("%.3f", calibratedPickLocation.getY()) + ", "
+                                        + String.format("%.3f", calibratedPickLocation.getZ()) + ", "
+                                        + String.format("%.2f", calibratedPickLocation.getRotation()) + "°)");
                             }
                         }
                     }

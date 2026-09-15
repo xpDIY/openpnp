@@ -438,6 +438,28 @@ extends AbstractReferenceFeederConfigurationWizard {
         btnResetPipeline = new JButton(resetPipelineAction);
         panelVisionEnabled.add(btnResetPipeline, "12, 16, 3, 1");
 
+        // Feeders that don't support OCR (e.g. CassetteFeeder, which identifies parts
+        // through the baseplate firmware) don't need the OCR controls. Removing them from
+        // the panel collapses the otherwise empty rows and keeps the configuration view
+        // focused on what is relevant.
+        if (!feeder.isOcrSupported()) {
+            for (java.awt.Component c : new java.awt.Component[] {
+                    lblOcrWrongPart, comboBoxWrongPartAction,
+                    lblOcrFontName, comboBoxFontName,
+                    btnSetupocrregion,
+                    lblStopAfterWrong, checkBoxStopAfterWrongPart,
+                    lblFontSizept, textFieldFontSizePt,
+                    btnSetPartByOcr,
+                    lblDiscoverOnJobStart, checkBoxDiscoverOnJobStart,
+                    btnOcrAllFeeders
+            }) {
+                if (c != null) {
+                    panelVisionEnabled.remove(c);
+                }
+            }
+            panelVisionEnabled.revalidate();
+        }
+
         panelCloning = new JPanel();
         panelCloning.setBorder(new TitledBorder(null, "Clone Settings", TitledBorder.LEADING, TitledBorder.TOP, null, null));
         contentPanel.add(panelCloning);
@@ -588,11 +610,13 @@ extends AbstractReferenceFeederConfigurationWizard {
         addWrappedBinding(feeder, "precisionAverage", textFieldPrecisionAverage, "text", lengthConverter);
         addWrappedBinding(feeder, "precisionConfidenceLimit", textFieldPrecisionConfidenceLimit, "text", lengthConverter);
 
-        addWrappedBinding(feeder, "ocrWrongPartAction", comboBoxWrongPartAction, "selectedItem");
-        addWrappedBinding(feeder, "ocrStopAfterWrongPart", checkBoxStopAfterWrongPart, "selected");
-        addWrappedBinding(feeder, "ocrDiscoverOnJobStart", checkBoxDiscoverOnJobStart, "selected");
-        addWrappedBinding(feeder, "ocrFontName", comboBoxFontName, "selectedItem");
-        addWrappedBinding(feeder, "ocrFontSizePt", textFieldFontSizePt, "text", doubleConverter);
+        if (feeder.isOcrSupported()) {
+            addWrappedBinding(feeder, "ocrWrongPartAction", comboBoxWrongPartAction, "selectedItem");
+            addWrappedBinding(feeder, "ocrStopAfterWrongPart", checkBoxStopAfterWrongPart, "selected");
+            addWrappedBinding(feeder, "ocrDiscoverOnJobStart", checkBoxDiscoverOnJobStart, "selected");
+            addWrappedBinding(feeder, "ocrFontName", comboBoxFontName, "selectedItem");
+            addWrappedBinding(feeder, "ocrFontSizePt", textFieldFontSizePt, "text", doubleConverter);
+        }
         addWrappedBinding(feeder, "pipelineType", pipelineType, "selectedItem");
 
         addWrappedBinding(feeder, "cloneTemplateStatus", textPaneCloneTemplateStatus, "text");

@@ -71,6 +71,7 @@ import org.openpnp.gui.support.MessageBoxes;
 import org.openpnp.gui.support.Wizard;
 import org.openpnp.gui.support.WizardContainer;
 import org.openpnp.gui.tablemodel.FeedersTableModel;
+import org.openpnp.machine.reference.feeder.CassetteFeederConfigurator;
 import org.openpnp.machine.reference.vision.AbstractPartAlignment;
 import org.openpnp.machine.reference.vision.ReferenceBottomVision;
 import org.openpnp.machine.reference.ReferenceFeeder;
@@ -127,6 +128,7 @@ public class FeedersPanel extends JPanel implements WizardContainer {
 
         setLayout(new BorderLayout(0, 0));
         tableModel = new FeedersTableModel(configuration);
+        tableModel.addTableModelListener(e -> updateDiscoverFeedersActionEnabled());
 
         JPanel panel = new JPanel();
         add(panel, BorderLayout.NORTH);
@@ -149,6 +151,11 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         toolBar.add(feedFeederAction);
         toolBar.add(moveCameraToPickLocation);
         toolBar.add(moveToolToPickLocation);
+
+        // Discover CassetteAutoFeeders from the firmware. Not selection-based:
+        // enabled only while the machine contains a CassetteFeederConfigurator.
+        toolBar.addSeparator();
+        toolBar.add(discoverFeedersAction);
 
         JPanel panel_1 = new JPanel();
         panel.add(panel_1, BorderLayout.EAST);
@@ -349,6 +356,27 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         popupMenu.add(setFeedOptionsMenu);
 
         table.setComponentPopupMenu(popupMenu);
+
+        updateDiscoverFeedersActionEnabled();
+    }
+
+    /**
+     * The Discover Feeders action needs a {@link CassetteFeederConfigurator} to
+     * exist in the machine (it owns the baseplate layout the discovery uses).
+     * Enabled/disabled reactively as feeders are added/removed (the table model
+     * fires on every machine feeder-list change).
+     */
+    private void updateDiscoverFeedersActionEnabled() {
+        boolean hasConfigurator = false;
+        if (configuration.getMachine() != null) {
+            for (Feeder f : configuration.getMachine().getFeeders()) {
+                if (f instanceof CassetteFeederConfigurator) {
+                    hasConfigurator = true;
+                    break;
+                }
+            }
+        }
+        discoverFeedersAction.setEnabled(hasConfigurator);
     }
 
     private boolean keepUnAppliedFeederConfigurationChanges() {
@@ -845,6 +873,29 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         }
     };
     
+    /**
+     * Discover all CassetteAutoFeeders on the machine's cassette baseplates by
+     * querying the firmware, using the CassetteFeederConfigurator layout.
+     */
+    public Action discoverFeedersAction = new AbstractAction() {
+        {
+            putValue(SMALL_ICON, Icons.refresh);
+            putValue(NAME, Translations.getString("FeedersPanel.Action.DiscoverFeeders")); //$NON-NLS-1$
+            putValue(SHORT_DESCRIPTION, Translations.getString("FeedersPanel.Action.DiscoverFeeders.Description")); //$NON-NLS-1$
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent arg0) {
+            UiUtils.submitUiMachineTask(() -> {
+                for (Feeder feeder : configuration.getMachine().getFeeders()) {
+                    if (feeder instanceof CassetteFeederConfigurator) {
+                        ((CassetteFeederConfigurator) feeder).discoverFeeders();
+                    }
+                }
+            });
+        }
+    };
+
     public final Action setEnabledAction = new AbstractAction() {
         {
             putValue(NAME, Translations.getString("FeedersPanel.Action.SetEnabled")); //$NON-NLS-1$

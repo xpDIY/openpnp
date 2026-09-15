@@ -1114,6 +1114,16 @@ public class ReferencePushPullFeeder extends ReferenceFeeder {
         return ocrDiscoverOnJobStart;
     }
 
+    /**
+     * Whether this feeder supports OCR-based part identification. Subclasses that identify
+     * their parts through other means (e.g. CassetteFeeder, through the baseplate firmware)
+     * can override this to return false so the OCR controls are hidden from the
+     * configuration wizard and OCR is never triggered.
+     */
+    public boolean isOcrSupported() {
+        return true;
+    }
+
     public void setOcrDiscoverOnJobStart(boolean ocrDiscoverOnJobStart) {
         Object oldValue = this.ocrDiscoverOnJobStart;
         this.ocrDiscoverOnJobStart = ocrDiscoverOnJobStart;
@@ -1397,6 +1407,10 @@ public class ReferencePushPullFeeder extends ReferenceFeeder {
             feature.findFeatures(FindFeaturesMode.FromPickLocationGetHoles);
 
             // Store the initial vision based results
+            Logger.debug("[autoSetupPipeline] FromPickLocationGetHoles result: pickLocation=("
+                    + String.format("%.3f", feature.getCalibratedPickLocation().getX()) + ", "
+                    + String.format("%.3f", feature.getCalibratedPickLocation().getY()) + ", "
+                    + String.format("%.3f", feature.getCalibratedPickLocation().getZ()) + ")");
             setLocation(feature.getCalibratedPickLocation());
             setHole1Location(feature.getCalibratedHole1Location());
             setHole2Location(feature.getCalibratedHole2Location());
@@ -1666,8 +1680,10 @@ public class ReferencePushPullFeeder extends ReferenceFeeder {
             boolean cloneVisionSettings, boolean clonePipeline, ReferencePushPullFeeder templateFeeder)
                     throws CloneNotSupportedException {
         if (cloneLocationSettings) {
-            // just the Z from the location
-            setLocation(getLocation().derive(templateFeeder.getLocation(), false, false, true, false));
+            // just the Z from the location — only copy if current Z is not already set
+            if (!getLocation().getLengthZ().isInitialized()) {
+                setLocation(getLocation().derive(templateFeeder.getLocation(), false, false, true, false));
+            }
             // options
             setNormalizePickLocation(templateFeeder.isNormalizePickLocation());
             setSnapToAxis(templateFeeder.isSnapToAxis());
@@ -2092,7 +2108,19 @@ public class ReferencePushPullFeeder extends ReferenceFeeder {
                 // this ^^^ preserves the existing behaviour of ReferencePushPullFeeder -> detailed discussion in PR#1623 (https://github.com/openpnp/openpnp/pull/1623)
                 FindFeaturesMode findMode = (calibrationTrigger == CalibrationTrigger.None) ? FindFeaturesMode.OcrOnly : FindFeaturesMode.CalibrateHoles;
                 feature = new FeederVisionHelper(getVisionHelperParams(camera, pipeline));
-                feature.findFeatures(findMode);
+                try {
+                    feature.findFeatures(findMode);
+                }
+                catch (Exception ex) {
+                    if (i > 0) {
+                        // On subsequent passes, the camera may have converged to a position
+                        // where the sprocket holes are no longer within calibration tolerance.
+                        // Gracefully break the loop instead of failing the auto-setup.
+                        Logger.debug("Calibration pass " + i + " failed, breaking loop: " + ex.getMessage());
+                        break;
+                    }
+                    throw ex;
+                }
 
                 runningHole1Location = feature.getCalibratedHole1Location();
                 runningHole2Location = feature.getCalibratedHole2Location();
@@ -2110,6 +2138,10 @@ public class ReferencePushPullFeeder extends ReferenceFeeder {
                     setHole2Location(runningHole2Location);
                 }
                 if (storePickLocation) {
+                    Logger.debug("[performVisionOperations] setting location to calibrated pickLocation=("
+                            + String.format("%.3f", runningPickLocation.getX()) + ", "
+                            + String.format("%.3f", runningPickLocation.getY()) + ", "
+                            + String.format("%.3f", runningPickLocation.getZ()) + ")");
                     setLocation(runningPickLocation);
                 }
                 if (storeVisionOffset) {

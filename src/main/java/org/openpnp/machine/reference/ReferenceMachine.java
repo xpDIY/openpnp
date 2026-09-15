@@ -65,6 +65,8 @@ import org.openpnp.machine.reference.driver.NullMotionPlanner;
 import org.openpnp.machine.reference.driver.ReferenceAdvancedMotionPlanner;
 import org.openpnp.machine.reference.feeder.AdvancedLoosePartFeeder;
 import org.openpnp.machine.reference.feeder.BlindsFeeder;
+import org.openpnp.machine.reference.feeder.CassetteAutoFeeder;
+import org.openpnp.machine.reference.feeder.CassetteFeederConfigurator;
 import org.openpnp.machine.reference.feeder.CassetteFeeder;
 import org.openpnp.machine.reference.feeder.CassetteLoosePartFeeder;
 import org.openpnp.machine.reference.feeder.ReferenceAutoFeeder;
@@ -455,6 +457,8 @@ public class ReferenceMachine extends AbstractMachine {
         l.add(PhotonFeeder.class);
         l.add(CassetteFeeder.class);
         l.add(CassetteLoosePartFeeder.class);
+        l.add(CassetteAutoFeeder.class);
+        l.add(CassetteFeederConfigurator.class);
         l.add(BambooFeederAutoVision.class);
         l.add(CassetteFeeder.class);
         l.addAll(registeredFeederClasses);

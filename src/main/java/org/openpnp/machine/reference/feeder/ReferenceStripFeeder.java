@@ -140,8 +140,8 @@ public class ReferenceStripFeeder extends ReferenceFeeder {
 
     private Length referenceHoleToPartLinear = new Length(2, LengthUnit.Millimeters);
 
-    private Location visionLocation;
-    private Location visionLocationReference;
+    protected Location visionLocation;
+    protected Location visionLocationReference;
 
     public Length getHoleDiameterMin() {
         return getHoleDiameter().multiply(0.9);
@@ -436,7 +436,7 @@ public class ReferenceStripFeeder extends ReferenceFeeder {
         return Double.min(extrapolationDistanceMm,extrapolationDistanceLimit);
     }
 
-    private Location findClosestHole(Camera camera, Location expectedLocation) throws Exception {
+    protected Location findClosestHole(Camera camera, Location expectedLocation) throws Exception {
         if (getParallaxDiameter().getValue() == 0) {
             // no parallax
             MovableUtils.moveToLocationAtSafeZ(camera, expectedLocation);

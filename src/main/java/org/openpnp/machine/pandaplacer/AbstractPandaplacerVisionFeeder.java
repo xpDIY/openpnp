@@ -549,6 +549,10 @@ public abstract class AbstractPandaplacerVisionFeeder extends ReferenceFeeder {
             FeederVisionHelper feature = new FeederVisionHelper(getVisionHelperParams(camera, pipeline))
                     .findFeatures(FindFeaturesMode.FromPickLocationGetHoles);
             // Store the initial vision based results
+            Logger.debug("[autoSetupPipeline] FromPickLocationGetHoles result: pickLocation=("
+                    + String.format("%.3f", feature.getCalibratedPickLocation().getX()) + ", "
+                    + String.format("%.3f", feature.getCalibratedPickLocation().getY()) + ", "
+                    + String.format("%.3f", feature.getCalibratedPickLocation().getZ()) + ")");
             setLocation(feature.getCalibratedPickLocation());
             setHole1Location(feature.getCalibratedHole1Location());
             setHole2Location(feature.getCalibratedHole2Location());
@@ -625,8 +629,20 @@ public abstract class AbstractPandaplacerVisionFeeder extends ReferenceFeeder {
                         .derive(null, null, null, runningPickLocation.getRotation()+getRotationInFeeder());
                 Logger.debug("calibrating sprocket holes pass "+ i+ " midPoint is "+midPoint);
                 MovableUtils.moveToLocationAtSafeZ(camera, midPoint);
-                feature = new FeederVisionHelper(getVisionHelperParams(camera, pipeline))
-                        .findFeatures(FindFeaturesMode.CalibrateHoles);
+                feature = new FeederVisionHelper(getVisionHelperParams(camera, pipeline));
+                try {
+                    feature.findFeatures(FindFeaturesMode.CalibrateHoles);
+                }
+                catch (Exception ex) {
+                    if (i > 0) {
+                        // On subsequent passes, the camera may have converged to a position
+                        // where the sprocket holes are no longer within calibration tolerance.
+                        // Gracefully break the loop instead of failing the auto-setup.
+                        Logger.debug("Calibration pass " + i + " failed, breaking loop: " + ex.getMessage());
+                        break;
+                    }
+                    throw ex;
+                }
                 runningHole1Location = feature.getCalibratedHole1Location();
                 runningHole2Location = feature.getCalibratedHole2Location();
                 runningPickLocation = feature.getCalibratedPickLocation();
@@ -642,6 +658,10 @@ public abstract class AbstractPandaplacerVisionFeeder extends ReferenceFeeder {
                     setHole2Location(runningHole2Location);
                 }
                 if (storePickLocation) {
+                    Logger.debug("[performVisionOperations] setting location to calibrated pickLocation=("
+                            + String.format("%.3f", runningPickLocation.getX()) + ", "
+                            + String.format("%.3f", runningPickLocation.getY()) + ", "
+                            + String.format("%.3f", runningPickLocation.getZ()) + ")");
                     setLocation(runningPickLocation);
                 }
                 if (storeVisionOffset) {

@@ -76,6 +76,9 @@ public class CassetteLoosePartFeeder extends ReferenceLoosePartFeeder {
     // Working plane height - used as reference for height calculations
     @Element(required = false)
     protected Length baseplateOffsetZ = new Length(0, LengthUnit.Millimeters);
+    // Per-feeder height read from the actuator during discovery
+    @Element(required = false)
+    protected Length feederHeight = new Length(0, LengthUnit.Millimeters);
     
     // Track if settings have changed and need to be saved to feeder
     private transient boolean needsSave = false;
