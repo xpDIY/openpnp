@@ -20,6 +20,7 @@
 package org.openpnp.machine.reference.feeder;
 
 import java.util.List;
+import java.util.Map;
 
 import javax.swing.Action;
 
@@ -36,6 +37,7 @@ import org.openpnp.model.Configuration;
 import org.openpnp.model.Length;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
+import org.openpnp.model.Part;
 import org.openpnp.spi.Actuator;
 import org.openpnp.spi.Camera;
 import org.openpnp.spi.Driver;
@@ -176,7 +178,8 @@ public int getRow(){
     /**
      * Save the feeder configuration (including height) to feeder flash.
      * Must be called from within a machine task context.
-     * Height is stored in 0.1mm units (integer), so we:
+     * Height is stored in 0.1mm units (integer), relative to the baseplate
+     * working plane, so we:
      * 1. Subtract the working plane height (baseplateOffsetZ)
      * 2. Multiply by 10 to convert mm to 0.1mm units
      * 3. Take integer value
@@ -217,7 +220,59 @@ public int getRow(){
         firePropertyChange("isVerticalLayout", oldValue, val);
     }
 
+    // ---- discovery (driven by CassetteFeederConfigurator) ----
 
+    /**
+     * Apply firmware-reported per-slot info to this feeder, deriving its pick
+     * location from the configurator's baseplate layout. Called by
+     * {@link CassetteFeederConfigurator#discoverFeeders()} for each reported
+     * slot whose subtype ({@code st}) is 1 (loose part cassette).
+     */
+    public void applyDiscovery(CassetteFeederConfigurator cfg, Map<String, String> info) {
+        int r = Integer.parseInt(info.get("r"));
+        int c = Integer.parseInt(info.get("c"));
+        // Per-feeder contact offsets from firmware flash (ox/oy in mm).
+        double ox = info.containsKey("ox") ? Double.parseDouble(info.get("ox")) : 0;
+        double oy = info.containsKey("oy") ? Double.parseDouble(info.get("oy")) : 0;
+        // Height from the feeder is in 0.1mm units, relative to the working plane.
+        double h = Double.parseDouble(info.get("h")) / 10.0;
+        int st = info.containsKey("st") ? Integer.parseInt(info.get("st")) : 1;
+
+        setRow(r);
+        setCol(c);
+        setSubType(st);
+        setTotalRow(cfg.getTotalRow());
+        setTotalCol(cfg.getTotalCol());
+        setIsVerticalLayout(cfg.getIsVerticalLayout());
+        setOrientation(cfg.getOrientation());
+        setBaseplateOffsetZ(cfg.getBaseplateOffsetZ());
+        feederHeight = new Length(h, LengthUnit.Millimeters);
+        setName(info.get("n"));
+
+        // Pick = slot center + rotate(firmware contact offset, orientation), at
+        // the working-plane height plus the reported per-feeder height. Keeping
+        // the offset firmware-driven means it can be tuned once in the firmware
+        // (and re-applied to every feeder by discovery) instead of editing each
+        // feeder's config individually.
+        Location slot = cfg.getSlotCenterMm(r, c);
+        int orientation = cfg.getOrientation();
+        // Z = working-plane height + the reported per-feeder height. Keeping both
+        // terms lets the baseplate offset and the firmware H each be adjusted
+        // independently.
+        double z = cfg.getBaseplateOffsetZ().convertToUnits(LengthUnit.Millimeters).getValue() + h;
+        // Bypass setLocation(): discovery applies firmware-reported values, it
+        // should not trigger the auto-save-to-flash behaviour of the override.
+        super.setLocation(new Location(LengthUnit.Millimeters,
+                slot.getX() + CassetteFeederConfigurator.rotateX(ox, oy, orientation),
+                slot.getY() + CassetteFeederConfigurator.rotateY(ox, oy, orientation),
+                z, 0));
+
+        Part part = CassetteFeederConfigurator.resolvePart(info.get("n"));
+        if (part != null) {
+            setPart(part);
+        }
+        setEnabled(true);
+    }
 
     @Override
     public void feed(Nozzle nozzle) throws Exception {

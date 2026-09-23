@@ -1,7 +1,11 @@
 package org.openpnp.machine.reference.feeder;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -469,22 +473,44 @@ public class CassetteFeederConfigurator extends ReferenceFeeder {
     }
 
     private void addFeeders(Map<String, Map<String, String>> map) {
-        Map<String, String> processed = new HashMap<>();
-        for (Feeder f : Configuration.get().getMachine().getFeeders()) {
-            if (!(f instanceof CassetteAutoFeeder)) {
+        Machine machine = Configuration.get().getMachine();
+        Set<String> kept = new HashSet<>();
+        List<Feeder> stale = new ArrayList<>();
+        // Snapshot the feeder list: replacing a feeder removes/adds entries,
+        // which would otherwise ConcurrentModificationException this loop.
+        for (Feeder f : new ArrayList<>(machine.getFeeders())) {
+            boolean isAuto = f instanceof CassetteAutoFeeder;
+            boolean isLoose = f instanceof CassetteLoosePartFeeder;
+            if (!isAuto && !isLoose) {
                 continue;
             }
             String id = f.getId();
-            if (map.containsKey(id)) {
-                ((CassetteAutoFeeder) f).applyDiscovery(this, map.get(id));
-                processed.put(id, id);
+            if (!map.containsKey(id)) {
+                f.setEnabled(false);
+                continue;
+            }
+            Map<String, String> info = map.get(id);
+            // Firmware subtype: 0 = tape auto feeder, 1 = loose part cassette.
+            boolean wantLoose = "1".equals(info.get("st"));
+            if (wantLoose && isLoose) {
+                ((CassetteLoosePartFeeder) f).applyDiscovery(this, info);
+                kept.add(id);
+            }
+            else if (!wantLoose && isAuto) {
+                ((CassetteAutoFeeder) f).applyDiscovery(this, info);
+                kept.add(id);
             }
             else {
-                f.setEnabled(false);
+                // The reported subtype no longer matches this feeder's class
+                // (e.g. a slot changed from tape to loose part): recreate it.
+                stale.add(f);
             }
         }
+        for (Feeder f : stale) {
+            machine.removeFeeder(f);
+        }
         for (String key : map.keySet()) {
-            if (processed.containsKey(key)) {
+            if (kept.contains(key)) {
                 continue;
             }
             Map<String, String> info = map.get(key);
@@ -493,11 +519,20 @@ public class CassetteFeederConfigurator extends ReferenceFeeder {
                 continue;
             }
             try {
-                CassetteAutoFeeder nf = new CassetteAutoFeeder();
-                nf.id = key;
-                nf.applyDiscovery(this, info);
-                Configuration.get().getMachine().addFeeder(nf);
-                Logger.info("Added CassetteAutoFeeder id:{}, name:{}", key, info.get("n"));
+                if ("1".equals(info.get("st"))) {
+                    CassetteLoosePartFeeder nf = new CassetteLoosePartFeeder();
+                    nf.id = key;
+                    nf.applyDiscovery(this, info);
+                    machine.addFeeder(nf);
+                    Logger.info("Added CassetteLoosePartFeeder id:{}, name:{}", key, info.get("n"));
+                }
+                else {
+                    CassetteAutoFeeder nf = new CassetteAutoFeeder();
+                    nf.id = key;
+                    nf.applyDiscovery(this, info);
+                    machine.addFeeder(nf);
+                    Logger.info("Added CassetteAutoFeeder id:{}, name:{}", key, info.get("n"));
+                }
             }
             catch (Exception e) {
                 Logger.error("Failed to add feeder id:{}", key, e);
