@@ -887,7 +887,10 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         @Override
         public void actionPerformed(ActionEvent arg0) {
             UiUtils.submitUiMachineTask(() -> {
-                for (Feeder feeder : configuration.getMachine().getFeeders()) {
+                // Iterate over a snapshot: discoverFeeders() adds new feeders to the
+                // machine's feeder list, which would otherwise cause a
+                // ConcurrentModificationException.
+                for (Feeder feeder : new ArrayList<>(configuration.getMachine().getFeeders())) {
                     if (feeder instanceof CassetteFeederConfigurator) {
                         ((CassetteFeederConfigurator) feeder).discoverFeeders();
                     }
