@@ -21,7 +21,9 @@
 
 package org.openpnp.machine.reference.axis;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import org.openpnp.ConfigurationListener;
 import org.openpnp.gui.support.Wizard;
@@ -39,6 +41,7 @@ import org.openpnp.spi.base.AbstractTransformedAxis;
 import org.openpnp.util.Matrix;
 import org.simpleframework.xml.Attribute;
 import org.simpleframework.xml.Element;
+import org.simpleframework.xml.ElementList;
 
 /**
  * The ReferenceLinearTransformAxis is a multi-input axis linear transformation for one output axis. Multiple
@@ -75,6 +78,181 @@ public class ReferenceLinearTransformAxis extends AbstractTransformedAxis {
     private Length offset = new Length(0.0, LengthUnit.Millimeters);
     @Attribute(required = false)
     private boolean compensation = false;
+
+    /**
+     * Optional non-linear residual correction, sampled on the base plate hole grid. The linear
+     * transform above is the (least squares) affine fit; this grid captures the local residuals
+     * that the affine cannot represent (e.g. a slightly different scale on one side of the plate).
+     * It is applied in the raw input coordinate domain.
+     */
+    @Element(required = false)
+    private GridResidual gridResidual;
+
+    public GridResidual getGridResidual() {
+        return gridResidual;
+    }
+
+    public void setGridResidual(GridResidual gridResidual) {
+        this.gridResidual = gridResidual;
+    }
+
+    /**
+     * A non-linear residual correction, sampled on a regular grid in the ideal (corrected)
+     * coordinate space. The cell of a raw coordinate is found by applying the affine model, then the
+     * node residuals are interpolated bilinearly.
+     */
+    public static class GridResidual {
+        /** The nominal hole pitch. */
+        @Attribute(required = false)
+        private double spacingMm = 32.0;
+        /** The affine model that maps raw to the ideal grid coordinates, used to locate the cell. */
+        @Attribute(required = false)
+        private double a11 = 1.0;
+        @Attribute(required = false)
+        private double a12 = 0.0;
+        @Attribute(required = false)
+        private double a21 = 0.0;
+        @Attribute(required = false)
+        private double a22 = 1.0;
+        @Attribute(required = false)
+        private double bX = 0.0;
+        @Attribute(required = false)
+        private double bY = 0.0;
+        /** The residual nodes, one per measured hole. */
+        @ElementList(required = false, inline = true, entry = "node")
+        private List<ResidualNode> nodes = new ArrayList<>();
+
+        private transient int minI;
+        private transient int maxI;
+        private transient int minJ;
+        private transient int maxJ;
+        private transient double[][] residual;
+        private transient boolean[][] valid;
+
+        public GridResidual() {
+        }
+
+        public GridResidual(double spacingMm, double a11, double a12, double a21, double a22,
+                double bX, double bY) {
+            this.spacingMm = spacingMm;
+            this.a11 = a11;
+            this.a12 = a12;
+            this.a21 = a21;
+            this.a22 = a22;
+            this.bX = bX;
+            this.bY = bY;
+        }
+
+        public void addNode(int i, int j, double residualValue) {
+            ResidualNode node = new ResidualNode();
+            node.i = i;
+            node.j = j;
+            node.value = residualValue;
+            nodes.add(node);
+        }
+
+        private void prepare() {
+            if (residual != null) {
+                return;
+            }
+            minI = Integer.MAX_VALUE;
+            maxI = Integer.MIN_VALUE;
+            minJ = Integer.MAX_VALUE;
+            maxJ = Integer.MIN_VALUE;
+            for (ResidualNode node : nodes) {
+                minI = Math.min(minI, node.i);
+                maxI = Math.max(maxI, node.i);
+                minJ = Math.min(minJ, node.j);
+                maxJ = Math.max(maxJ, node.j);
+            }
+            if (nodes.isEmpty()) {
+                minI = maxI = minJ = maxJ = 0;
+            }
+            int cols = maxI - minI + 1;
+            int rows = maxJ - minJ + 1;
+            residual = new double[cols][rows];
+            valid = new boolean[cols][rows];
+            for (ResidualNode node : nodes) {
+                residual[node.i - minI][node.j - minJ] = node.value;
+                valid[node.i - minI][node.j - minJ] = true;
+            }
+        }
+
+        /**
+         * @return the residual at the given raw coordinates, or 0 if there is no grid.
+         */
+        public double evaluate(double rawX, double rawY) {
+            prepare();
+            if (nodes.isEmpty()) {
+                return 0.0;
+            }
+            // Locate the cell using the affine model in the ideal coordinate space.
+            double idealX = a11 * rawX + a12 * rawY + bX;
+            double idealY = a21 * rawX + a22 * rawY + bY;
+            double fi = idealX / spacingMm;
+            double fj = idealY / spacingMm;
+            int i0 = (int) Math.floor(fi);
+            int j0 = (int) Math.floor(fj);
+            double tx = fi - i0;
+            double ty = fj - j0;
+            double r00 = node(i0, j0);
+            double r10 = node(i0 + 1, j0);
+            double r01 = node(i0, j0 + 1);
+            double r11 = node(i0 + 1, j0 + 1);
+            return (1 - tx) * (1 - ty) * r00
+                    + tx * (1 - ty) * r10
+                    + (1 - tx) * ty * r01
+                    + tx * ty * r11;
+        }
+
+        private double node(int i, int j) {
+            if (i < minI) {
+                i = minI;
+            }
+            if (i > maxI) {
+                i = maxI;
+            }
+            if (j < minJ) {
+                j = minJ;
+            }
+            if (j > maxJ) {
+                j = maxJ;
+            }
+            if (valid[i - minI][j - minJ]) {
+                return residual[i - minI][j - minJ];
+            }
+            // Missing node: use the nearest valid neighbour in the row/column, else 0.
+            for (int dj = 0; dj <= maxJ - minJ; dj++) {
+                int jj = j - dj;
+                if (jj >= minJ && valid[i - minI][jj - minJ]) {
+                    return residual[i - minI][jj - minJ];
+                }
+                jj = j + dj;
+                if (jj <= maxJ && valid[i - minI][jj - minJ]) {
+                    return residual[i - minI][jj - minJ];
+                }
+            }
+            return 0.0;
+        }
+
+        public boolean isEmpty() {
+            return nodes == null || nodes.isEmpty();
+        }
+
+        public int nodeCount() {
+            return nodes == null ? 0 : nodes.size();
+        }
+
+        /** One residual sample at hole (i, j). */
+        public static class ResidualNode {
+            @Attribute(required = false)
+            private int i;
+            @Attribute(required = false)
+            private int j;
+            @Attribute(required = false)
+            private double value;
+        }
+    }
 
     public ReferenceLinearTransformAxis() {
         Configuration.get().addListener(new ConfigurationListener.Adapter() {
@@ -257,12 +435,15 @@ public class ReferenceLinearTransformAxis extends AbstractTransformedAxis {
         double rotation = location.getCoordinate(inputAxisRotation);
         if (compensation == false || !Arrays.asList(options).contains(LocationOption.SuppressStaticCompensation)) {
             double offset = this.offset.convertToUnits(AxesLocation.getUnits()).getValue();
-            return location.put(new AxesLocation(this, 
-                    x * factorX
+            double coordinate = x * factorX
                     + y * factorY
                     + z * factorZ
                     + rotation * factorRotation
-                    + offset));
+                    + offset;
+            if (gridResidual != null && !gridResidual.isEmpty()) {
+                coordinate += gridResidual.evaluate(x, y);
+            }
+            return location.put(new AxesLocation(this, coordinate));
         }
         else {
             // Compensation suppressed, just return the typed axis (unit transform).
@@ -336,6 +517,30 @@ public class ReferenceLinearTransformAxis extends AbstractTransformedAxis {
         };
         // Calculate the raw vector by applying the inverted Affine Transform.
         double [][] rawVector = Matrix.multiply(invertedAffineTransform, transformedVector);
+        // If any axis has a non-linear residual grid, refine the solution so that
+        // affine(raw) + residual(raw) == transformed, using a few fixed-point iterations.
+        boolean hasResidual = false;
+        for (int i = 0; i < 4; i++) {
+            if (linearAxes[i] != null && linearAxes[i].gridResidual != null
+                    && !linearAxes[i].gridResidual.isEmpty()) {
+                hasResidual = true;
+                break;
+            }
+        }
+        if (hasResidual) {
+            for (int iter = 0; iter < 5; iter++) {
+                double rawX = rawVector[0][0];
+                double rawY = rawVector[1][0];
+                double [][] adjusted = new double [][] {
+                    { transformedVector[0][0] - getResidual(linearAxes[0], rawX, rawY) },
+                    { transformedVector[1][0] - getResidual(linearAxes[1], rawX, rawY) },
+                    { transformedVector[2][0] - getResidual(linearAxes[2], rawX, rawY) },
+                    { transformedVector[3][0] - getResidual(linearAxes[3], rawX, rawY) },
+                    { 1 }
+                };
+                rawVector = Matrix.multiply(invertedAffineTransform, adjusted);
+            }
+        }
         // Place the consolidated result in the location
         location = location.put(new AxesLocation(inputAxes[0], rawVector[0][0]));
         location = location.put(new AxesLocation(inputAxes[1], rawVector[1][0]));
@@ -348,6 +553,13 @@ public class ReferenceLinearTransformAxis extends AbstractTransformedAxis {
         location = AbstractTransformedAxis.toRaw(inputAxes[3], location, options);
         return location;
     }
+    private static double getResidual(ReferenceLinearTransformAxis axis, double rawX, double rawY) {
+        if (axis != null && axis.gridResidual != null) {
+            return axis.gridResidual.evaluate(rawX, rawY);
+        }
+        return 0.0;
+    }
+
     protected void consolidateInputAxes(Axis axis, AbstractAxis inputAxis, Axis.Type inputType,
             AbstractAxis[] inputAxes) throws Exception {
         int j = inputType.ordinal();

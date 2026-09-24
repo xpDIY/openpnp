@@ -169,6 +169,9 @@ public class SquarenessSolutions implements Solutions.Subject {
     private Compensation lastMetricCompensation;
     private int lastHoleCount;
     private List<GridMeasurement> lastMeasurements;
+    private List<VerifyMeasurement> lastVerification;
+    private double lastVerificationMeanX;
+    private double lastVerificationMeanY;
     private double lastSpacing = 0;
 
     public SquarenessSolutions setMachine(ReferenceMachine machine) {
@@ -246,6 +249,25 @@ public class SquarenessSolutions implements Solutions.Subject {
     }
 
     /**
+     * The position error measured when verifying the calibration: the camera was moved to the
+     * calibrated (ideal) location of hole (i, j) and the remaining offset to the actual hole was
+     * measured, in millimeters, in the user coordinate system.
+     */
+    public static class VerifyMeasurement {
+        public final int i;
+        public final int j;
+        public final double dx;
+        public final double dy;
+
+        public VerifyMeasurement(int i, int j, double dx, double dy) {
+            this.i = i;
+            this.j = j;
+            this.dx = dx;
+            this.dy = dy;
+        }
+    }
+
+    /**
      * The persisted raw measurements of the last base plate grid calibration. Storing these in the
      * machine configuration lets the user redo the fit or show the heatmap again after a restart,
      * without having to re-scan the whole base plate.
@@ -255,16 +277,20 @@ public class SquarenessSolutions implements Solutions.Subject {
         private double spacingMm = 32.0;
         @Attribute(required = false)
         private String headName = "";
+        /** The camera Z used while scanning, so verification can revisit the holes in focus. */
+        @Attribute(required = false)
+        private double plateZMm = 0.0;
         @ElementList(required = false, inline = true, entry = "hole")
         private List<Hole> holes = new ArrayList<>();
 
         public GridCalibrationData() {
         }
 
-        public GridCalibrationData(double spacingMm, String headName,
+        public GridCalibrationData(double spacingMm, String headName, double plateZMm,
                 List<GridMeasurement> measurements) {
             this.spacingMm = spacingMm;
             this.headName = headName == null ? "" : headName;
+            this.plateZMm = plateZMm;
             this.holes = new ArrayList<>();
             for (GridMeasurement m : measurements) {
                 holes.add(new Hole(m.i, m.j, m.rawX, m.rawY));
@@ -277,6 +303,10 @@ public class SquarenessSolutions implements Solutions.Subject {
 
         public String getHeadName() {
             return headName;
+        }
+
+        public double getPlateZMm() {
+            return plateZMm;
         }
 
         public boolean isEmpty() {
@@ -467,8 +497,12 @@ public class SquarenessSolutions implements Solutions.Subject {
                                 +String.format("%.4f", lastStepCompensation.getSquarenessErrorDegrees())+"°</td></tr>");
                         str.append("</table>");
                         str.append("<p>The step size and squareness are applied together as software "
-                                + "transform axes. If your controller firmware has a steps/mm setting, "
-                                + "you may instead correct it there by multiplying the X steps/mm by "
+                                + "transform axes. In addition, the local variation between the holes "
+                                + "(for example a slightly different scale on one side of the plate) is "
+                                + "compensated by a non-linear correction sampled on the measured hole "
+                                + "grid, so the accuracy is maintained across the whole base plate.</p>");
+                        str.append("<p>If your controller firmware has a steps/mm setting, "
+                                + "you may instead correct the average there by multiplying the X steps/mm by "
                                 + String.format("%.4f", 1.0/lastStepCompensation.l11)+" and the Y steps/mm by "
                                 + String.format("%.4f", 1.0/lastStepCompensation.l22)
                                 +", then re-run this calibration.</p>");
@@ -654,6 +688,8 @@ public class SquarenessSolutions implements Solutions.Subject {
      */
     public Compensation calibrateStepSize(ReferenceHead head, ReferenceCamera camera) throws Exception {
         validateCalibrationPreconditions(camera);
+        double plateZMm = camera.getLocation().getLengthZ()
+                .convertToUnits(LengthUnit.Millimeters).getValue();
         List<GridMeasurement> measurements = measureGrid(head, camera);
         Compensation metric = fitCompensation(measurements, holeSpacingMm);
         // The whole-plate scan determines the X/Y scale and the squareness (shear) at the same
@@ -675,7 +711,7 @@ public class SquarenessSolutions implements Solutions.Subject {
             Logger.info("Base plate grid rotation relative to the machine axes: {}°.",
                     String.format("%.3f", gridRotationDegrees));
         }
-        applyCompensation(camera, compensation);
+        applyCompensation(camera, compensation, measurements);
 
         // Because this change affects the coordinate system, perform a (visual) homing cycle to
         // re-reference the machine coordinates.
@@ -689,7 +725,9 @@ public class SquarenessSolutions implements Solutions.Subject {
         lastMeasurements = measurements;
         lastSpacing = holeSpacingMm;
         // Persist the raw measurements so the fit can be redone and the heatmap shown later.
-        lastCalibration = new GridCalibrationData(holeSpacingMm, head.getName(), measurements);
+        lastCalibration = new GridCalibrationData(holeSpacingMm, head.getName(), plateZMm,
+                measurements);
+        lastVerification = null;
         stepSizeCalibrated = true;
         squarenessCalibrated = true;
         Logger.info("Step size and squareness calibration of {}: X {} Y {} squareness {} ({} holes)",
@@ -885,21 +923,40 @@ public class SquarenessSolutions implements Solutions.Subject {
                 metric.l11, true);
         BufferedImage yImage = createStepSizeHeatmap(byIndex, minI, maxI, minJ, maxJ, spacing,
                 metric.l22, false);
-        JPanel heatmap = new JPanel(new GridLayout(1, 2, 2, 0));
-        heatmap.setOpaque(false);
-        heatmap.add(createHeatmapColumn(xImage, "X", metric.l11));
-        heatmap.add(createHeatmapColumn(yImage, "Y", metric.l22));
-        wrapper.add(heatmap, BorderLayout.CENTER);
-        JLabel legend = new JLabel("Step scale heatmap - blue < avg < red", SwingConstants.CENTER);
-        legend.setFont(legend.getFont().deriveFont(Font.PLAIN, 11f));
-        wrapper.add(legend, BorderLayout.NORTH);
+        JPanel calRow = new JPanel(new GridLayout(1, 2, 2, 0));
+        calRow.setOpaque(false);
+        calRow.add(createHeatmapColumn(xImage, "X   avg "+String.format("%.6f", metric.l11)));
+        calRow.add(createHeatmapColumn(yImage, "Y   avg "+String.format("%.6f", metric.l22)));
+
+        JPanel content = new JPanel(new GridLayout(0, 1, 0, 4));
+        content.setOpaque(false);
+        content.add(createHeatmapColumn(calRow,
+                "Step scale heatmap (before correction) - blue < avg < red"));
+        if (lastVerification != null && !lastVerification.isEmpty()) {
+            BufferedImage errX = createResidualHeatmap(lastVerification, minI, maxI, minJ, maxJ, true);
+            BufferedImage errY = createResidualHeatmap(lastVerification, minI, maxI, minJ, maxJ, false);
+            JPanel errRow = new JPanel(new GridLayout(1, 2, 2, 0));
+            errRow.setOpaque(false);
+            errRow.add(createHeatmapColumn(errX, "dX error [mm]"));
+            errRow.add(createHeatmapColumn(errY, "dY error [mm]"));
+            content.add(createHeatmapColumn(errRow,
+                    String.format("After calibration - relative residual [mm] "
+                            + "(mean offset dX %+.2f, dY %+.2f)",
+                            lastVerificationMeanX, lastVerificationMeanY)));
+        }
+        wrapper.add(content, BorderLayout.CENTER);
         JButton refit = new JButton("Re-fit & apply from stored data");
         refit.setToolTipText("Recompute the step size and squareness from the stored hole "
                 + "measurements and apply the correction, without re-scanning the base plate.");
         refit.addActionListener(e -> refitFromStoredData(camera));
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        JButton verify = new JButton("Verify");
+        verify.setToolTipText("Move the camera to the calibrated location of every hole and "
+                + "measure the remaining error, then show it as a heatmap.");
+        verify.addActionListener(e -> verifyCalibration(camera));
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         buttons.setOpaque(false);
         buttons.add(refit);
+        buttons.add(verify);
         wrapper.add(buttons, BorderLayout.SOUTH);
         return wrapper;
     }
@@ -937,6 +994,134 @@ public class SquarenessSolutions implements Solutions.Subject {
         return null;
     }
 
+    private Compensation getCalibrationAffine() {
+        if (lastStepCompensation != null) {
+            return lastStepCompensation;
+        }
+        List<GridMeasurement> measurements = getCalibrationMeasurements();
+        if (measurements != null) {
+            try {
+                return fitAffine(measurements, getCalibrationSpacing());
+            }
+            catch (Exception e) {
+                Logger.warn(e);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Verify the calibration by moving the camera to the calibrated (ideal) location of every
+     * measured hole and measuring the remaining error. The result is shown as a residual heatmap.
+     */
+    private void verifyCalibration(ReferenceCamera camera) {
+        List<GridMeasurement> measurements = getCalibrationMeasurements();
+        Compensation affine = getCalibrationAffine();
+        if (measurements == null || measurements.isEmpty() || affine == null || camera == null) {
+            UiUtils.showError(new Exception("Run the calibration first."));
+            return;
+        }
+        double spacing = getCalibrationSpacing();
+        double plateZMm = lastCalibration != null ? lastCalibration.getPlateZMm() : 0.0;
+        // Find the reference hole to determine the ideal grid origin offset.
+        GridMeasurement origin = null;
+        for (GridMeasurement m : measurements) {
+            if (m.i == 0 && m.j == 0) {
+                origin = m;
+                break;
+            }
+        }
+        if (origin == null) {
+            UiUtils.showError(new Exception("The reference (0,0) hole was not measured."));
+            return;
+        }
+        final GridMeasurement finalOrigin = origin;
+        if (plateZMm == 0.0) {
+            plateZMm = camera.getLocation().getLengthZ()
+                    .convertToUnits(LengthUnit.Millimeters).getValue();
+        }
+        final double finalPlateZ = plateZMm;
+        List<VerifyMeasurement> result = new ArrayList<>();
+        try {
+            UiUtils.submitUiMachineTask(() -> {
+                verifyGrid(camera, measurements, affine, finalOrigin, spacing, finalPlateZ, result);
+                return true;
+            }).get();
+            lastVerification = result;
+            if (result.isEmpty()) {
+                UiUtils.showError(new Exception("No holes could be verified."));
+                return;
+            }
+            // A constant offset is expected (visual homing re-references the machine origin), so
+            // remove the mean offset and report the remaining local (relative) error, which is what
+            // matters for placement accuracy.
+            double meanX = 0;
+            double meanY = 0;
+            for (VerifyMeasurement v : result) {
+                meanX += v.dx;
+                meanY += v.dy;
+            }
+            meanX /= result.size();
+            meanY /= result.size();
+            lastVerificationMeanX = meanX;
+            lastVerificationMeanY = meanY;
+            List<VerifyMeasurement> relative = new ArrayList<>();
+            double maxAbs = 0;
+            double maxRel = 0;
+            double sumSq = 0;
+            for (VerifyMeasurement v : result) {
+                relative.add(new VerifyMeasurement(v.i, v.j, v.dx - meanX, v.dy - meanY));
+                maxAbs = Math.max(maxAbs, Math.hypot(v.dx, v.dy));
+                double e = Math.hypot(v.dx - meanX, v.dy - meanY);
+                maxRel = Math.max(maxRel, e);
+                sumSq += e * e;
+            }
+            double rms = Math.sqrt(sumSq / result.size());
+            lastVerification = relative;
+            Logger.info("Base plate calibration verification: {} holes, offset dX {} mm dY {} mm, "
+                    + "relative max error {} mm, relative RMS error {} mm (absolute max {} mm).",
+                    result.size(), String.format("%.4f", meanX), String.format("%.4f", meanY),
+                    String.format("%.4f", maxRel), String.format("%.4f", rms),
+                    String.format("%.4f", maxAbs));
+            MainFrame.get().getIssuesAndSolutionsTab().findIssuesAndSolutions();
+        }
+        catch (Exception e) {
+            UiUtils.showError(e);
+        }
+    }
+
+    /**
+     * Move to the calibrated location of each hole and measure the remaining offset. This runs on
+     * the machine thread.
+     */
+    private void verifyGrid(ReferenceCamera camera, List<GridMeasurement> measurements,
+            Compensation affine, GridMeasurement origin, double spacing, double plateZMm,
+            List<VerifyMeasurement> result) throws Exception {
+        double offX = affine.l11 * origin.rawX + affine.l12 * origin.rawY;
+        double offY = affine.l21 * origin.rawX + affine.l22 * origin.rawY;
+        double mmPerPx = holeDiameterMm / Math.max(3, holeDiameterPx);
+        VisionSolutions visionSolutions = machine.getVisionSolutions();
+        int width = camera.getWidth();
+        int height = camera.getHeight();
+        for (GridMeasurement m : measurements) {
+            Location target = new Location(LengthUnit.Millimeters,
+                    m.i * spacing + offX, m.j * spacing + offY, plateZMm, 0);
+            camera.moveTo(target);
+            camera.waitForCompletion(CompletionType.WaitForStillstand);
+            try {
+                Circle detected = visionSolutions.getSubjectPixelLocation(camera, camera,
+                        new Circle(0, 0, Math.max(3, holeDiameterPx)), 0.3, null, null, false);
+                double dx = (detected.x - width / 2.0) * mmPerPx;
+                double dy = (height / 2.0 - detected.y) * mmPerPx;
+                result.add(new VerifyMeasurement(m.i, m.j, dx, dy));
+            }
+            catch (Exception e) {
+                Logger.info("Base plate verification: hole ({},{}) not found ({}), skipping.",
+                        m.i, m.j, e.getMessage());
+            }
+        }
+    }
+
     private void refitFromStoredData(ReferenceCamera camera) {
         List<GridMeasurement> measurements = getCalibrationMeasurements();
         if (measurements == null || measurements.isEmpty() || camera == null) {
@@ -949,13 +1134,14 @@ public class SquarenessSolutions implements Solutions.Subject {
             double gridRotationDegrees = Math.toDegrees(Math.atan2(affine.l21, affine.l11));
             Compensation applied = (Math.abs(gridRotationDegrees) > 5.0) ? metric : affine;
             UiUtils.submitUiMachineTask(() -> {
-                applyCompensation(camera, applied);
+                applyCompensation(camera, applied, measurements);
                 return true;
             }).get();
             lastStepCompensation = applied;
             lastMetricCompensation = metric;
             lastMeasurements = measurements;
             lastSpacing = spacing;
+            lastVerification = null;
             Logger.info("Base plate grid re-fit from stored data: metric {}, affine {} -> applied {}",
                     metric, affine, applied);
         }
@@ -964,16 +1150,66 @@ public class SquarenessSolutions implements Solutions.Subject {
         }
     }
 
-    private javax.swing.JComponent createHeatmapColumn(BufferedImage image, String axis,
-            double avgScale) {
+    private javax.swing.JComponent createHeatmapColumn(BufferedImage image, String titleText) {
         JPanel column = new JPanel(new BorderLayout(0, 2));
         column.setOpaque(false);
-        JLabel title = new JLabel(axis+"   avg "+String.format("%.6f", avgScale),
-                SwingConstants.CENTER);
+        JLabel title = new JLabel(titleText, SwingConstants.CENTER);
         title.setFont(title.getFont().deriveFont(Font.PLAIN, 11f));
         column.add(title, BorderLayout.NORTH);
         column.add(new JLabel(new ImageIcon(image)), BorderLayout.CENTER);
         return column;
+    }
+
+    private javax.swing.JComponent createHeatmapColumn(javax.swing.JComponent component,
+            String titleText) {
+        JPanel column = new JPanel(new BorderLayout(0, 2));
+        column.setOpaque(false);
+        JLabel title = new JLabel(titleText, SwingConstants.CENTER);
+        title.setFont(title.getFont().deriveFont(Font.PLAIN, 11f));
+        column.add(title, BorderLayout.NORTH);
+        column.add(component, BorderLayout.CENTER);
+        return column;
+    }
+
+    /**
+     * Heatmap of the signed verification error (mm) at each verified hole.
+     */
+    private BufferedImage createResidualHeatmap(List<VerifyMeasurement> list, int minI, int maxI,
+            int minJ, int maxJ, boolean xAxis) {
+        final int cell = 36;
+        int width = (maxI - minI + 1) * cell;
+        int height = (maxJ - minJ + 1) * cell;
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = image.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
+                RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g.setColor(Color.WHITE);
+        g.fillRect(0, 0, width, height);
+        double maxAbs = 1e-9;
+        for (VerifyMeasurement v : list) {
+            maxAbs = Math.max(maxAbs, Math.abs(xAxis ? v.dx : v.dy));
+        }
+        Font cellFont = new Font(Font.SANS_SERIF, Font.PLAIN, 9);
+        for (VerifyMeasurement v : list) {
+            if (v.i < minI || v.i > maxI || v.j < minJ || v.j > maxJ) {
+                continue;
+            }
+            int cx = (v.i - minI) * cell;
+            int cy = (maxJ - v.j) * cell;
+            double value = xAxis ? v.dx : v.dy;
+            g.setColor(colorForDeviation(value / maxAbs));
+            g.fillRect(cx, cy, cell - 1, cell - 1);
+            g.setColor(Color.BLACK);
+            g.drawRect(cx, cy, cell - 1, cell - 1);
+            g.setFont(cellFont);
+            FontMetrics fm = g.getFontMetrics();
+            String text = String.format("%.2f", value);
+            int tx = cx + (cell - 1 - fm.stringWidth(text)) / 2;
+            int ty = cy + (cell - 1 + fm.getAscent() - fm.getDescent()) / 2;
+            g.drawString(text, tx, ty);
+        }
+        g.dispose();
+        return image;
     }
 
     private BufferedImage createStepSizeHeatmap(Map<Long, GridMeasurement> byIndex,
@@ -1438,9 +1674,11 @@ public class SquarenessSolutions implements Solutions.Subject {
     }
 
     /**
-     * Apply the full step size (scale) and squareness (shear) correction.
+     * Apply the full step size (scale) and squareness (shear) correction, plus the optional
+     * non-linear residual grid built from the hole measurements.
      */
-    private void applyCompensation(ReferenceCamera camera, Compensation compensation) throws Exception {
+    private void applyCompensation(ReferenceCamera camera, Compensation compensation,
+            List<GridMeasurement> measurements) throws Exception {
         ReferenceLinearTransformAxis[] axes = getCompensationAxes(camera);
         axes[0].setFactorX(compensation.l11);
         axes[0].setFactorY(compensation.l12);
@@ -1450,6 +1688,54 @@ public class SquarenessSolutions implements Solutions.Subject {
         axes[1].setFactorY(compensation.l22);
         axes[1].setOffset(new Length(0.0, LengthUnit.Millimeters));
         axes[1].setCompensation(true);
+        if (measurements != null && !measurements.isEmpty()) {
+            axes[0].setGridResidual(buildGridResidual(measurements, compensation, true));
+            axes[1].setGridResidual(buildGridResidual(measurements, compensation, false));
+        }
+        else {
+            axes[0].setGridResidual(null);
+            axes[1].setGridResidual(null);
+        }
+    }
+
+    /**
+     * Build the non-linear residual grid for one output axis from the measured holes. The residual
+     * is the difference between the ideal hole position and the linear (affine) model, sampled at
+     * each measured hole, so that a piecewise-bilinear correction is applied between the holes.
+     */
+    private ReferenceLinearTransformAxis.GridResidual buildGridResidual(
+            List<GridMeasurement> measurements, Compensation affine, boolean xOutput) throws Exception {
+        return buildGridResidual(measurements, affine, xOutput, getCalibrationSpacing());
+    }
+
+    public static ReferenceLinearTransformAxis.GridResidual buildGridResidual(
+            List<GridMeasurement> measurements, Compensation affine, boolean xOutput, double spacing)
+                    throws Exception {
+        GridMeasurement origin = null;
+        for (GridMeasurement m : measurements) {
+            if (m.i == 0 && m.j == 0) {
+                origin = m;
+                break;
+            }
+        }
+        if (origin == null) {
+            throw new Exception("The reference (0,0) hole was not measured.");
+        }
+        // b = -A * raw00, so that A*raw + b is the ideal grid coordinate (relative to the origin).
+        double bX = -(affine.l11 * origin.rawX + affine.l12 * origin.rawY);
+        double bY = -(affine.l21 * origin.rawX + affine.l22 * origin.rawY);
+        ReferenceLinearTransformAxis.GridResidual grid =
+                new ReferenceLinearTransformAxis.GridResidual(spacing,
+                        affine.l11, affine.l12, affine.l21, affine.l22, bX, bY);
+        for (GridMeasurement m : measurements) {
+            double linear = xOutput
+                    ? (affine.l11 * m.rawX + affine.l12 * m.rawY)
+                    : (affine.l21 * m.rawX + affine.l22 * m.rawY);
+            // Target: the ideal grid aligned with the (0,0) hole's current position.
+            double target = (xOutput ? m.i : m.j) * spacing + (xOutput ? -bX : -bY);
+            grid.addNode(m.i, m.j, target - linear);
+        }
+        return grid;
     }
 
     private ReferenceLinearTransformAxis getOrCreateCompensationAxis(Type type, AbstractAxis inputX,
@@ -1517,10 +1803,12 @@ public class SquarenessSolutions implements Solutions.Subject {
         if (compX != null) {
             compX.setFactorX(l11);
             compX.setFactorY(l12);
+            compX.setGridResidual(null);
         }
         if (compY != null) {
             compY.setFactorX(l21);
             compY.setFactorY(l22);
+            compY.setGridResidual(null);
         }
     }
 

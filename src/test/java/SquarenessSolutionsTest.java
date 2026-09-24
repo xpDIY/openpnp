@@ -181,7 +181,7 @@ public class SquarenessSolutionsTest {
         List<GridMeasurement> measurements = buildMeasurements(
                 new double[] {1.01, 0.02, 0.0, 1.02}, 0, 3, 0, 3);
         SquarenessSolutions.GridCalibrationData data =
-                new SquarenessSolutions.GridCalibrationData(32.0, "H1", measurements);
+                new SquarenessSolutions.GridCalibrationData(32.0, "H1", 40.0, measurements);
 
         org.simpleframework.xml.Serializer serializer =
                 org.openpnp.model.Configuration.createSerializer();
@@ -192,6 +192,7 @@ public class SquarenessSolutionsTest {
 
         assertEquals(32.0, read.getSpacingMm(), 1e-9);
         assertEquals("H1", read.getHeadName());
+        assertEquals(40.0, read.getPlateZMm(), 1e-9);
         List<GridMeasurement> readMeasurements = read.toMeasurements();
         assertEquals(measurements.size(), readMeasurements.size());
         for (int k = 0; k < measurements.size(); k++) {
@@ -219,6 +220,64 @@ public class SquarenessSolutionsTest {
         SquarenessSolutions read = serializer.read(SquarenessSolutions.class, xml);
         assertEquals(12, read.getHoleColumns());
         assertEquals(6, read.getHoleRows());
+    }
+
+    @Test
+    public void testResidualGridImprovesLocalAccuracy() throws Exception {
+        // A machine with a position dependent X scale (a left-to-right gradient), like a belt driven
+        // machine, plus a small Y scale error. The affine fit can only represent the average; the
+        // residual grid must recover the local variation.
+        List<GridMeasurement> measurements = new ArrayList<>();
+        for (int j = 0; j <= 4; j++) {
+            for (int i = 0; i <= 9; i++) {
+                double idealX = i * SPACING;
+                double idealY = j * SPACING;
+                // 0.5% scale gradient across X, 0.2% Y scale error.
+                double rawX = idealX * (1.0 - 0.005 * (i - 4.5) / 4.5);
+                double rawY = idealY * 1.002;
+                measurements.add(new GridMeasurement(i, j, rawX, rawY));
+            }
+        }
+        Compensation affine = SquarenessSolutions.fitAffine(measurements, SPACING);
+        org.openpnp.machine.reference.axis.ReferenceLinearTransformAxis.GridResidual gridX =
+                SquarenessSolutions.buildGridResidual(measurements, affine, true, SPACING);
+
+        double maxLinearError = 0;
+        double maxCorrectedError = 0;
+        for (GridMeasurement m : measurements) {
+            double linear = affine.l11 * m.rawX + affine.l12 * m.rawY;
+            double corrected = linear + gridX.evaluate(m.rawX, m.rawY);
+            double target = m.i * SPACING;
+            maxLinearError = Math.max(maxLinearError, Math.abs(linear - target));
+            maxCorrectedError = Math.max(maxCorrectedError, Math.abs(corrected - target));
+        }
+        org.junit.jupiter.api.Assertions.assertTrue(maxCorrectedError < maxLinearError,
+                "residual grid must improve on the affine (linear " + maxLinearError
+                + ", corrected " + maxCorrectedError + ")");
+        org.junit.jupiter.api.Assertions.assertTrue(maxCorrectedError < 0.02,
+                "residual grid must be accurate at the holes (" + maxCorrectedError + ")");
+    }
+
+    @Test
+    public void testGridResidualPersistence() throws Exception {
+        org.openpnp.machine.reference.axis.ReferenceLinearTransformAxis.GridResidual grid =
+                new org.openpnp.machine.reference.axis.ReferenceLinearTransformAxis.GridResidual(
+                        32.0, 1.01, 0.0, 0.0, 1.0, 0.0, 0.0);
+        grid.addNode(0, 0, 0.001);
+        grid.addNode(1, 0, -0.002);
+        grid.addNode(2, 0, 0.003);
+
+        org.simpleframework.xml.Serializer serializer =
+                org.openpnp.model.Configuration.createSerializer();
+        java.io.StringWriter writer = new java.io.StringWriter();
+        serializer.write(grid, writer);
+        org.openpnp.machine.reference.axis.ReferenceLinearTransformAxis.GridResidual read =
+                serializer.read(
+                        org.openpnp.machine.reference.axis.ReferenceLinearTransformAxis.GridResidual.class,
+                        writer.toString());
+        assertEquals(3, read.nodeCount());
+        // The residual at a node must survive the round trip (raw 64/1.01 maps to ideal X = 64).
+        assertEquals(0.003, read.evaluate(64.0 / 1.01, 0.0), 1e-4);
     }
 
     @Test
