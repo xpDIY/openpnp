@@ -123,11 +123,27 @@ public class SquarenessSolutions implements Solutions.Subject {
     @Attribute(required = false)
     private double holeSpacingMm = 32.0;
 
+    /**
+     * The number of hole columns to scan, starting at the reference hole and going in +X. The
+     * reference hole is column 1, so the highest hole index i is {@code holeColumns - 1}.
+     */
     @Attribute(required = false)
-    private int holeSpanX = 4;
+    private int holeColumns = 10;
 
+    /**
+     * The number of hole rows to scan, starting at the reference hole row and going in +Y. The
+     * reference hole is row 1, so the highest hole index j is {@code holeRows - 1}.
+     */
     @Attribute(required = false)
-    private int holeSpanY = 4;
+    private int holeRows = 5;
+
+    // Deprecated pre "Columns/Rows" settings, kept so that older machine.xml files still load.
+    @Deprecated
+    @Attribute(required = false)
+    private int holeSpanX = 0;
+    @Deprecated
+    @Attribute(required = false)
+    private int holeSpanY = 0;
 
     /**
      * Set when the step size has been calibrated. The squareness calibration is only offered
@@ -176,20 +192,30 @@ public class SquarenessSolutions implements Solutions.Subject {
         this.holeSpacingMm = holeSpacingMm;
     }
 
-    public int getHoleSpanX() {
-        return holeSpanX;
+    public int getHoleColumns() {
+        if (holeColumns > 0) {
+            return holeColumns;
+        }
+        // Migrate an old symmetric X span (reference at the plate edge): span + 1 columns.
+        return holeSpanX > 0 ? holeSpanX + 1 : 10;
     }
 
-    public void setHoleSpanX(int holeSpanX) {
-        this.holeSpanX = holeSpanX;
+    public void setHoleColumns(int holeColumns) {
+        this.holeColumns = Math.max(1, holeColumns);
+        this.holeSpanX = 0;
     }
 
-    public int getHoleSpanY() {
-        return holeSpanY;
+    public int getHoleRows() {
+        if (holeRows > 0) {
+            return holeRows;
+        }
+        // Migrate an old Y span (rows above the reference): span + 1 rows.
+        return holeSpanY > 0 ? holeSpanY + 1 : 5;
     }
 
-    public void setHoleSpanY(int holeSpanY) {
-        this.holeSpanY = holeSpanY;
+    public void setHoleRows(int holeRows) {
+        this.holeRows = Math.max(1, holeRows);
+        this.holeSpanY = 0;
     }
 
     public boolean isStepSizeCalibrated() {
@@ -410,11 +436,12 @@ public class SquarenessSolutions implements Solutions.Subject {
                             + "next hole. A heatmap of the local step size variation across the base "
                             + "plate is shown at the end.</p>");
                     str.append("<p>Make sure the machine is homed. Jog the down-looking camera "
-                            + finalCamera.getName()+" approximately over the bottom row of a base "
-                            + "plate hole column, then press <strong>Accept</strong>.</p>");
+                            + finalCamera.getName()+" approximately over the bottom-left reference "
+                            + "hole - the scan only goes right (+X) and up (+Y) from there - then "
+                            + "press <strong>Accept</strong>.</p>");
                     str.append("<p><strong color=\"red\">CAUTION</strong>: The camera "
                             + finalCamera.getName()+" will move across the base plate, visiting up to "
-                            + ((2*holeSpanX+1)*(holeSpanY+1))+" holes. Make sure the path is clear "
+                            + (getHoleColumns()*getHoleRows())+" holes. Make sure the path is clear "
                             + "of obstacles and that the camera is focused on the holes.</p>");
                     str.append("<p><strong>Note:</strong> changing the transform shifts the machine "
                             + "coordinate system. The machine will perform a visual homing cycle if "
@@ -566,32 +593,33 @@ public class SquarenessSolutions implements Solutions.Subject {
                         }
                     },
                     new Solutions.Issue.IntegerProperty(
-                            "Holes in X",
-                            "The number of holes to scan to each side of the reference hole in X.",
+                            "Columns",
+                            "The number of hole columns to scan, starting at the reference hole and "
+                            + "going in +X. The reference hole is column 1.",
                             1, 30) {
                         @Override
                         public int get() {
-                            return holeSpanX;
+                            return getHoleColumns();
                         }
 
                         @Override
                         public void set(int value) {
-                            holeSpanX = value;
+                            setHoleColumns(value);
                         }
                     },
                     new Solutions.Issue.IntegerProperty(
-                            "Holes in Y",
-                            "The number of hole rows to scan above the reference row (larger Y). "
-                            + "The reference hole is assumed to be on the bottom row.",
+                            "Rows",
+                            "The number of hole rows to scan, starting at the reference hole row and "
+                            + "going in +Y. The reference hole is row 1.",
                             1, 30) {
                         @Override
                         public int get() {
-                            return holeSpanY;
+                            return getHoleRows();
                         }
 
                         @Override
                         public void set(int value) {
-                            holeSpanY = value;
+                            setHoleRows(value);
                         }
                     },
                     new Solutions.Issue.ComponentProperty(
@@ -696,19 +724,19 @@ public class SquarenessSolutions implements Solutions.Subject {
     }
 
     /**
-     * Scan the whole grid of possible base plate hole locations, row by row from the bottom row to
-     * the top row. The reference hole is assumed to be on the bottom row, so no rows below it are
-     * visited. Each row is anchored at the center column and then walked to the right and to the
-     * left. Every hole that can be detected (using the same circle detection as the rest of the
-     * calibration) is centered on and recorded. Holes that cannot be detected are skipped.
+     * Scan the grid of base plate hole locations, row by row from the reference row upward. The
+     * reference hole is assumed to be the bottom-left hole, so the scan goes in +X (right) and +Y
+     * (up) only. Each row is anchored at the reference column and then walked to the right. Every
+     * hole that can be detected (using the same circle detection as the rest of the calibration) is
+     * centered on and recorded. Holes that cannot be detected are skipped.
      *
      * @return the raw-coordinate measurements of all detected holes
      */
     private List<GridMeasurement> scanGrid(ReferenceCamera camera, AbstractAxis rawX,
             AbstractAxis rawY, Length holeDiameter, double spacing, Location reference)
                     throws Exception {
-        final int nx = holeSpanX;
-        final int ny = holeSpanY;
+        final int nx = getHoleColumns() - 1;
+        final int ny = getHoleRows() - 1;
         List<GridMeasurement> measurements = new ArrayList<>();
         Map<Long, Location> holes = new HashMap<>();
         holes.put(gridKey(0, 0), reference);
@@ -752,43 +780,38 @@ public class SquarenessSolutions implements Solutions.Subject {
                 }
             }
             Location anchor = holes.get(gridKey(0, j));
-            // Walk to the right and to the left from the anchor (or the reference if no anchor).
-            for (int direction : new int[] {1, -1}) {
-                Location cursor = anchor;
-                Location lastFound = anchor;
-                int lastFoundI = 0;
-                if (cursor == null) {
-                    cursor = reference.add(stepY.multiply(j));
+            // Walk to the right from the anchor (the reference is the left-most column).
+            Location cursor = anchor;
+            Location lastFound = anchor;
+            int lastFoundI = 0;
+            if (cursor == null) {
+                cursor = reference.add(stepY.multiply(j));
+                lastFound = cursor;
+            }
+            for (int i = 1; i <= nx; i++) {
+                Long key = gridKey(i, j);
+                if (holes.containsKey(key)) {
+                    cursor = holes.get(key);
                     lastFound = cursor;
+                    lastFoundI = i;
+                    continue;
                 }
-                for (int step = 1; step <= nx; step++) {
-                    int i = direction * step;
-                    Long key = gridKey(i, j);
-                    if (holes.containsKey(key)) {
-                        cursor = holes.get(key);
-                        lastFound = cursor;
-                        lastFoundI = i;
-                        continue;
+                Location predicted = cursor.add(stepX);
+                Location centered = tryCenterAt(predicted, camera, holeDiameter,
+                        "("+i+","+j+")", 0.1, 0.2);
+                if (centered != null) {
+                    if (i != lastFoundI) {
+                        stepX = centered.subtract(lastFound).multiply(1.0 / (i - lastFoundI));
                     }
-                    Location predicted = (direction > 0)
-                            ? cursor.add(stepX)
-                            : cursor.subtract(stepX);
-                    Location centered = tryCenterAt(predicted, camera, holeDiameter,
-                            "("+i+","+j+")", 0.1, 0.2);
-                    if (centered != null) {
-                        if (i != lastFoundI) {
-                            stepX = centered.subtract(lastFound).multiply(1.0 / (i - lastFoundI));
-                        }
-                        lastFound = centered;
-                        lastFoundI = i;
-                        cursor = centered;
-                        holes.put(key, centered);
-                        measurements.add(measureHole(rawX, rawY, camera, centered, i, j));
-                    }
-                    else {
-                        // Continue along the nominal grid direction.
-                        cursor = predicted;
-                    }
+                    lastFound = centered;
+                    lastFoundI = i;
+                    cursor = centered;
+                    holes.put(key, centered);
+                    measurements.add(measureHole(rawX, rawY, camera, centered, i, j));
+                }
+                else {
+                    // Continue along the nominal grid direction.
+                    cursor = predicted;
                 }
             }
         }
@@ -799,7 +822,7 @@ public class SquarenessSolutions implements Solutions.Subject {
                     +"settings are correct, and that the grid is not completely covered.");
         }
         Logger.info("Base plate grid scan: {} of {} possible holes detected.",
-                measurements.size(), (2*nx+1)*(ny+1));
+                measurements.size(), (nx+1)*(ny+1));
         return measurements;
     }
 

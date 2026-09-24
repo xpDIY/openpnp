@@ -203,6 +203,25 @@ public class SquarenessSolutionsTest {
     }
 
     @Test
+    public void testColumnsRowsPersistence() throws Exception {
+        SquarenessSolutions solutions = new SquarenessSolutions();
+        solutions.setHoleColumns(12);
+        solutions.setHoleRows(6);
+
+        org.simpleframework.xml.Serializer serializer =
+                org.openpnp.model.Configuration.createSerializer();
+        java.io.StringWriter writer = new java.io.StringWriter();
+        serializer.write(solutions, writer);
+        String xml = writer.toString();
+        org.junit.jupiter.api.Assertions.assertTrue(xml.contains("hole-columns=\"12\""), xml);
+        org.junit.jupiter.api.Assertions.assertTrue(xml.contains("hole-rows=\"6\""), xml);
+
+        SquarenessSolutions read = serializer.read(SquarenessSolutions.class, xml);
+        assertEquals(12, read.getHoleColumns());
+        assertEquals(6, read.getHoleRows());
+    }
+
+    @Test
     public void testIdealMachineIsUnchanged() throws Exception {
         List<GridMeasurement> measurements = buildMeasurements(
                 new double[] {1, 0, 0, 1}, 0, 4, 0, 4);
