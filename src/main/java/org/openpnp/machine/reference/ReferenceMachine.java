@@ -94,6 +94,7 @@ import org.openpnp.machine.reference.solutions.CalibrationSolutions;
 import org.openpnp.machine.reference.solutions.KinematicSolutions;
 import org.openpnp.machine.reference.solutions.NozzleTipSolutions;
 import org.openpnp.machine.reference.solutions.ScriptingSolutions;
+import org.openpnp.machine.reference.solutions.SquarenessSolutions;
 import org.openpnp.machine.reference.solutions.VisionSolutions;
 import org.openpnp.machine.reference.vision.ReferenceBottomVision;
 import org.openpnp.machine.reference.vision.ReferenceFiducialLocator;
@@ -646,6 +647,13 @@ public class ReferenceMachine extends AbstractMachine {
         return calibrationSolutions;
     }
 
+    @Element(required = false)
+    private SquarenessSolutions squarenessSolutions = new SquarenessSolutions();
+
+    public SquarenessSolutions getSquarenessSolutions() {
+        return squarenessSolutions;
+    }
+
     private ScriptingSolutions scriptingSolutions = new ScriptingSolutions();
 
     @Override
@@ -654,6 +662,7 @@ public class ReferenceMachine extends AbstractMachine {
         nozzleTipSolutions.setMachine(this).findIssues(solutions);
         visualSolutions.setMachine(this).findIssues(solutions);
         calibrationSolutions.setMachine(this).findIssues(solutions);
+        squarenessSolutions.setMachine(this).findIssues(solutions);
         scriptingSolutions.setMachine(this).findIssues(solutions);
 
         if (solutions.isTargeting(Milestone.Advanced)) {

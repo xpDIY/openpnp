@@ -33,6 +33,7 @@ import java.util.Set;
 
 import javax.swing.Action;
 import javax.swing.Icon;
+import javax.swing.JComponent;
 import javax.swing.JOptionPane;
 import javax.swing.border.LineBorder;
 import javax.swing.table.AbstractTableModel;
@@ -460,6 +461,17 @@ public class Solutions extends AbstractTableModel {
                 super(label, toolTip);
             }
             public abstract Action get();
+        }
+
+        /**
+         * A custom property that renders an arbitrary Swing component on the right hand side of the
+         * issue panel. This is useful to show a live result or graph directly in the issue.
+         */
+        public abstract class ComponentProperty extends CustomProperty {
+            public ComponentProperty(String label, String toolTip) {
+                super(label, toolTip);
+            }
+            public abstract JComponent get();
         }
 
         public CustomProperty [] getProperties() {

@@ -37,11 +37,11 @@ import javax.swing.DefaultComboBoxModel;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JRadioButton;
 import javax.swing.JScrollPane;
-import javax.swing.JSlider;
 import javax.swing.JSpinner;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
@@ -68,6 +68,7 @@ import org.openpnp.model.Length;
 import org.openpnp.model.Solutions;
 import org.openpnp.model.Solutions.Issue;
 import org.openpnp.model.Solutions.Issue.ActionProperty;
+import org.openpnp.model.Solutions.Issue.ComponentProperty;
 import org.openpnp.model.Solutions.Issue.DoubleProperty;
 import org.openpnp.model.Solutions.Issue.BooleanProperty;
 import org.openpnp.model.Solutions.Issue.IntegerProperty;
@@ -83,7 +84,6 @@ import com.jgoodies.forms.layout.RowSpec;
 import com.jgoodies.forms.layout.Sizes;
 
 public class IssuePanel extends JPanel {
-    private static final int SLIDER_MAX = 10000;
     private static final int MAX_MULTIPLE_CHOICE = 10;
     final Solutions.Issue issue;
     final ReferenceMachine machine;
@@ -118,11 +118,22 @@ public class IssuePanel extends JPanel {
 
         panel = new JPanel();
         scrollPane.setViewportView(panel);
+        // If the issue renders a custom component (e.g. a heatmap), allow the value column to grow
+        // so the component is not clipped to the default narrow width.
+        String valueColumnMax = "150dlu";
+        if (issue != null) {
+            for (Solutions.Issue.CustomProperty property : issue.getProperties()) {
+                if (property instanceof ComponentProperty) {
+                    valueColumnMax = "1000dlu";
+                    break;
+                }
+            }
+        }
         panel.setLayout(new FormLayout(new ColumnSpec[] {
                 FormSpecs.RELATED_GAP_COLSPEC,
                 ColumnSpec.decode("max(70dlu;default)"),
                 FormSpecs.RELATED_GAP_COLSPEC,
-                new ColumnSpec(ColumnSpec.FILL, Sizes.bounded(Sizes.PREFERRED, Sizes.constant("70dlu", true), Sizes.constant("150dlu", true)), 1),
+                new ColumnSpec(ColumnSpec.FILL, Sizes.bounded(Sizes.PREFERRED, Sizes.constant("70dlu", true), Sizes.constant(valueColumnMax, true)), 1),
                 FormSpecs.RELATED_GAP_COLSPEC,
                 FormSpecs.LABEL_COMPONENT_GAP_COLSPEC,},
                 issue == null ? new RowSpec[] {
@@ -380,24 +391,43 @@ public class IssuePanel extends JPanel {
                 JLabel lbl = new JLabel(property.getLabel());
                 lbl.setToolTipText(property.getToolTip());
                 panel.add(lbl, "2, "+(formRow*2)+", right, default");
-                JSlider slider = new JSlider(JSlider.HORIZONTAL,
-                        0, SLIDER_MAX, getSliderValue(doubleProperty));
-                slider.addChangeListener(new ChangeListener() {
-                    public void stateChanged(ChangeEvent e) {
-                        int value = (int) slider.getValue();
-                        UiUtils.messageBoxOnException(() -> {
-                            doubleProperty.set(doubleProperty.getMin() + value*(doubleProperty.getMax() - doubleProperty.getMin())/SLIDER_MAX);
-                        });
-                        int newValue = getSliderValue(doubleProperty);
-                        if (newValue != value) {
-                            slider.setValue(newValue);
+                JTextField textField = new JTextField();
+                textField.setToolTipText(property.getToolTip());
+                textField.setEnabled(issue.getState() == Solutions.State.Open);
+                textField.setColumns(10);
+                textField.setText(formatDouble(doubleProperty.get()));
+                textField.getDocument().addDocumentListener(new DocumentListener() {
+                    public void changedUpdate(DocumentEvent e) {
+                        changedText();
+                    }
+                    public void removeUpdate(DocumentEvent e) {
+                        changedText();
+                    }
+                    public void insertUpdate(DocumentEvent e) {
+                        changedText();
+                    }
+
+                    public void changedText() {
+                        // Accept both '.' and ',' as the decimal separator.
+                        String text = textField.getText().trim().replace(',', '.');
+                        if (text.isEmpty()) {
+                            return;
+                        }
+                        try {
+                            double value = Double.parseDouble(text);
+                            value = Math.max(doubleProperty.getMin(),
+                                    Math.min(doubleProperty.getMax(), value));
+                            final double newValue = value;
+                            UiUtils.messageBoxOnException(() -> {
+                                doubleProperty.set(newValue);
+                            });
+                        }
+                        catch (NumberFormatException e) {
+                            // Ignore partially typed or invalid input.
                         }
                     }
                 });
-                double val = doubleProperty.get();
-                slider.setToolTipText(property.getToolTip());
-                slider.setEnabled(issue.getState() == Solutions.State.Open);
-                panel.add(slider, "4, "+(formRow*2)+", left, default");
+                panel.add(textField, "4, "+(formRow*2)+", left, default");
             }
             else if (property instanceof LengthProperty) {
                 LengthProperty lengthProperty = (LengthProperty) property;
@@ -442,6 +472,17 @@ public class IssuePanel extends JPanel {
                 button.setHorizontalAlignment(SwingConstants.LEFT);
                 button.setPreferredSize(new Dimension(200, button.getPreferredSize().height));
                 panel.add(button, "4, "+(formRow*2)+", left, fill");
+            }
+            else if (property instanceof ComponentProperty) {
+                ComponentProperty componentProperty = (ComponentProperty) property;
+                JLabel lbl = new JLabel(componentProperty.getLabel());
+                lbl.setToolTipText(componentProperty.getToolTip());
+                panel.add(lbl, "2, "+(formRow*2)+", right, top");
+                JComponent component = componentProperty.get();
+                if (component != null) {
+                    component.setToolTipText(componentProperty.getToolTip());
+                    panel.add(component, "4, "+(formRow*2)+", fill, fill");
+                }
             }
             // Consume the row
             formRow++;
@@ -584,8 +625,15 @@ public class IssuePanel extends JPanel {
         });
     }
 
-    public int getSliderValue(DoubleProperty doubleProperty) {
-        return (int) Math.round((doubleProperty.get() - doubleProperty.getMin())*SLIDER_MAX/(doubleProperty.getMax() - doubleProperty.getMin()));
+    /**
+     * Format a double for direct entry in a text field: no trailing zeros for whole numbers and a
+     * reasonable number of decimals otherwise.
+     */
+    private static String formatDouble(double value) {
+        if (value == Math.rint(value)) {
+            return String.format("%.0f", value);
+        }
+        return String.format("%.4f", value).replaceAll("0+$", "").replaceAll("\\.$", "");
     }
 
     private RowSpec[] dynamicRowspec(int rows) {
